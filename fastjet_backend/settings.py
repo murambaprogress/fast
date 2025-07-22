@@ -1,6 +1,9 @@
-
-
 from pathlib import Path
+from twilio.rest import Client
+
+
+
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -128,6 +131,10 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
 
 STATIC_URL = 'static/'
+import os
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
@@ -142,6 +149,13 @@ EMAIL_USE_TLS = True
 EMAIL_HOST_USER = 'murambaprogress@gmail.com'
 EMAIL_HOST_PASSWORD = 'hqip omoa qjca jiaj'  # You'll need to generate an app password in your Google account
 DEFAULT_FROM_EMAIL = 'FastJet Loyalty <murambaprogress@gmail.com>'
+TWILIO_ACCOUNT_SID = "ACc574e043f52d83ceefd946699e9a7c45"
+TWILIO_AUTH_TOKEN = "6b0b97197a98d9b41e9aa6512d053fcc"
+TWILIO_SMS_FROM = "+12709185346"
 
 # Frontend URL for verification links
 FRONTEND_URL = 'http://localhost:8080/'  # Replace with your actual frontend URL
+# settings.py
+ADMIN_PHONE = "+2639999999999" # Use your actual admin phone number
+ADMIN_PASSWORD = "fastjetv1" # Use a strong password in production
+ADMIN_EMAIL = "murambaprogress@gmail.com" # Use your actual admin email

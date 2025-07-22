@@ -11,7 +11,8 @@ from .views import (
     update_user_wallet,
     top_up_wallet,
     check_verification_status,
-    get_logged_in_user
+    get_logged_in_user,
+    user_approval
 )
 
 urlpatterns = [
@@ -38,4 +39,6 @@ urlpatterns = [
     # Verification status check
     path('check-verification/<str:email>/', check_verification_status, name='check-verification-status'),
     path('me/', get_logged_in_user, name='get_logged_in_user'),
+    path('users/<int:pk>/approve-decline/',user_approval, name='user-approval'), # New endpoint for approval
+  
 ]
