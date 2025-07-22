@@ -149,8 +149,8 @@ EMAIL_USE_TLS = True
 EMAIL_HOST_USER = 'murambaprogress@gmail.com'
 EMAIL_HOST_PASSWORD = 'hqip omoa qjca jiaj'  # You'll need to generate an app password in your Google account
 DEFAULT_FROM_EMAIL = 'FastJet Loyalty <murambaprogress@gmail.com>'
-TWILIO_ACCOUNT_SID = "ACc574e043f52d83ceefd946699e9a7c45"
-TWILIO_AUTH_TOKEN = "6b0b97197a98d9b41e9aa6512d053fcc"
+#TWILIO_ACCOUNT_SID = "ACc574e043f52d83ceefd946699e9a7c45"
+#TWILIO_AUTH_TOKEN = "6b0b97197a98d9b41e9aa6512d053fcc"
 TWILIO_SMS_FROM = "+12709185346"
 
 # Frontend URL for verification links
