@@ -4,7 +4,8 @@ from routes.models import Route
 from decimal import Decimal
 from django.core.validators import MinValueValidator
 import uuid
-from datetime import timedelta
+from datetime import timedelta, datetime
+from django.utils import timezone
 
 User = get_user_model()
 
@@ -22,6 +23,7 @@ PAYMENT_METHOD_CHOICES = [
     ('wallet', 'FastJet Wallet'),
     ('cash', 'Cash at Office'),
     ('points', 'Redeemed Points'),
+    ('installment', 'Installment Payment'),
 ]
 
 BOOKING_STATUS_CHOICES = [
@@ -29,6 +31,8 @@ BOOKING_STATUS_CHOICES = [
     ('confirmed', 'Confirmed'),
     ('cancelled', 'Cancelled'),
     ('completed', 'Completed'),
+    ('laybuy', 'Laybuy'), # New status for installment bookings
+    ('under_payment', 'Under Payment'), # Legacy status for installment bookings
 ]
 
 PAYMENT_STATUS_CHOICES = [
@@ -36,6 +40,7 @@ PAYMENT_STATUS_CHOICES = [
     ('paid', 'Paid'),
     ('failed', 'Failed'),
     ('refunded', 'Refunded'),
+    ('partial', 'Partially Paid'), # New status for installments
 ]
 
 class Flight(models.Model):
@@ -292,6 +297,13 @@ class Booking(models.Model):
     points_used = models.IntegerField(default=0)
     points_earned = models.IntegerField(default=0)
     
+    # Installment fields
+    is_installment = models.BooleanField(default=False)
+    installment_total = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    installment_count = models.IntegerField(default=0)
+    installment_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    installment_deadline = models.DateTimeField(null=True, blank=True)
+    
     # Status
     status = models.CharField(max_length=20, choices=BOOKING_STATUS_CHOICES, default='pending')
     
@@ -328,6 +340,37 @@ class Booking(models.Model):
     def total_passengers(self):
         return self.adult_count + self.child_count
 
+    @property
+    def remaining_installment_amount(self):
+        """Calculate remaining amount to be paid in installments"""
+        if not self.is_installment:
+            return Decimal('0.00')
+        
+        paid_amount = sum(payment.amount for payment in self.installment_payments.filter(status='completed'))
+        return self.installment_total - paid_amount
+
+    @property
+    def is_installment_eligible(self):
+        """Check if booking is eligible for installment payment"""
+        if not self.outbound_schedule:
+            return False
+        
+        # Check if departure is at least 3 months away
+        departure_date = self.outbound_schedule.departure_time.date()
+        today = timezone.now().date()
+        months_difference = (departure_date.year - today.year) * 12 + departure_date.month - today.month
+        
+        return months_difference >= 3
+
+    @property
+    def is_laybuy_complete(self):
+        """Check if all installments are paid and booking should move from laybuy to confirmed"""
+        if not self.is_installment:
+            return False
+        
+        pending_installments = self.installment_payments.filter(status='pending').count()
+        return pending_installments == 0
+
     def calculate_total_price(self):
         """Calculate total price including return trip if applicable"""
         outbound_price = self.outbound_schedule.route.price * self.total_passengers
@@ -343,13 +386,62 @@ class Booking(models.Model):
 
     def calculate_points_required(self):
         """Calculate points required for full payment"""
-        # Assuming 1 point = 1 USD equivalent
-        return int(self.total_price)
+        return 500  # Updated to 500 points for free flight
 
     def can_pay_with_points(self, user_points):
         """Check if user has enough points for payment"""
         required_points = self.calculate_points_required()
         return user_points >= required_points
+
+    def update_status_after_installment_payment(self):
+        """Update booking status after installment payment"""
+        if self.is_laybuy_complete:
+            self.status = 'confirmed'
+            self.payment_status = 'paid'
+            self.save()
+            
+            # Create history record for status change
+            BookingHistory.objects.create(
+                booking=self,
+                status_from='laybuy',
+                status_to='confirmed',
+                reason='All installments completed'
+            )
+
+class InstallmentPayment(models.Model):
+    """Track installment payments for bookings"""
+    booking = models.ForeignKey(Booking, on_delete=models.CASCADE, related_name='installment_payments')
+    installment_number = models.IntegerField()
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    due_date = models.DateTimeField()
+    payment_date = models.DateTimeField(null=True, blank=True)
+    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES)
+    status = models.CharField(max_length=20, choices=[
+        ('pending', 'Pending'),
+        ('completed', 'Completed'),
+        ('overdue', 'Overdue'),
+        ('failed', 'Failed')
+    ], default='pending')
+    points_earned = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['installment_number']
+        unique_together = ['booking', 'installment_number']
+
+    def __str__(self):
+        return f"Installment {self.installment_number} for {self.booking.booking_reference}"
+
+    def is_overdue(self):
+        """Check if installment is overdue"""
+        return self.status == 'pending' and timezone.now() > self.due_date
+
+    def save(self, *args, **kwargs):
+        # Update overdue status
+        if self.status == 'pending' and timezone.now() > self.due_date:
+            self.status = 'overdue'
+        super().save(*args, **kwargs)
 
 class Passenger(models.Model):
     """Individual passenger details"""

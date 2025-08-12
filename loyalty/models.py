@@ -39,7 +39,7 @@ class LoyaltyAccount(models.Model):
         return f"{self.user.phone_number} - {self.points} points"
 
     def can_redeem_free_flight(self):
-        """Check if user has enough points for free flight"""
+        """Check if user has enough points for free flight (threshold 1000)"""
         return self.points >= 1000
 
     def add_points(self, points, description=""):
@@ -113,19 +113,12 @@ class PointRedemption(models.Model):
         return f"{self.user.phone_number} - {self.redemption_type} ({self.status})"
 
     def approve(self, admin_user, notes=""):
-        """Approve the redemption"""
+        """Approve the redemption. For free_flight we only mark approved; booking creation & point deduction handled in view with flight assignment."""
         self.status = 'approved'
         self.reviewed_by = admin_user
         self.review_date = timezone.now()
         self.admin_notes = notes
         self.save()
-
-        # Deduct points from user account
-        loyalty_account = self.user.loyalty_account
-        loyalty_account.deduct_points(
-            self.points_required, 
-            f"Redeemed for {self.get_redemption_type_display()}"
-        )
 
     def reject(self, admin_user, notes=""):
         """Reject the redemption"""

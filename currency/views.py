@@ -4,8 +4,10 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import Currency
 from .serializers import CurrencySerializer
-
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
 @api_view(['GET', 'POST'])
+@permission_classes([AllowAny])
 def currency_list_create(request):
     if request.method == 'GET':
         currencies = Currency.objects.all()

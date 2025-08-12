@@ -68,10 +68,9 @@ class FlightSerializer(serializers.ModelSerializer):
         fields = '__all__'
     
     def get_route(self, obj):
-
         try:
-            if obj.flight and obj.flight.route:
-                route = obj.flight.route
+            if obj.route:  # The flight object itself has a route attribute
+                route = obj.route
                 return {
                     'id': route.id,
                     'from_destination': {

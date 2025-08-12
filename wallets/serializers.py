@@ -1,29 +1,25 @@
 from rest_framework import serializers
 from .models import Wallet, WalletBalance
-from currency.serializers import CurrencySerializer
+from currency.models import Currency
 
 class WalletBalanceSerializer(serializers.ModelSerializer):
-    currency = CurrencySerializer(read_only=True)
+    currency = serializers.SerializerMethodField()
 
     class Meta:
         model = WalletBalance
         fields = ['currency', 'balance']
 
+    def get_currency(self, obj):
+        return {
+            'code': obj.currency.code,
+            'name': obj.currency.name if hasattr(obj.currency, 'name') else obj.currency.code
+        }
 
 class WalletSerializer(serializers.ModelSerializer):
-    user_id = serializers.IntegerField(source='user.id', read_only=True)
-    first_name = serializers.CharField(source='user.first_name', read_only=True)
-    last_name = serializers.CharField(source='user.last_name', read_only=True)
-    phone_number = serializers.CharField(source='user.phone_number', read_only=True)
     balances = WalletBalanceSerializer(many=True, read_only=True)
 
     class Meta:
         model = Wallet
-        fields = [
-            'user_id',
-            'first_name',
-            'last_name',
-            'phone_number',
-            'created_at',
-            'balances'
-        ]
+        fields = ['user', 'balances', 'created_at']
+        read_only_fields = ['created_at']
+

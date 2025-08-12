@@ -1,6 +1,6 @@
 from django.contrib import admin
 from .models import (
-    FlightSchedule, Booking, Passenger, BookingPayment, BookingHistory, Flight
+    FlightSchedule, Booking, Passenger, BookingPayment, BookingHistory, Flight, InstallmentPayment
 )
 
 @admin.register(Flight)
@@ -105,17 +105,40 @@ class BookingHistoryInline(admin.TabularInline):
     extra = 0
     readonly_fields = ['timestamp']
 
+class InstallmentPaymentInline(admin.TabularInline):
+    model = InstallmentPayment
+    extra = 0
+    readonly_fields = ['created_at', 'updated_at']
+    fields = ['installment_number', 'amount', 'due_date', 'payment_date', 'status', 'points_earned']
+
 @admin.register(Booking)
 class BookingAdmin(admin.ModelAdmin):
     list_display = [
         'booking_reference', 'user', 'trip_type', 'outbound_schedule',
-        'total_passengers', 'total_price', 'payment_status', 'status', 'created_at'
+        'total_passengers', 'total_price', 'payment_status', 'status', 'is_installment', 'created_at'
     ]
-    list_filter = ['trip_type', 'payment_method', 'payment_status', 'status', 'created_at']
+    list_filter = ['trip_type', 'payment_method', 'payment_status', 'status', 'is_installment', 'created_at']
     search_fields = ['booking_reference', 'user__phone_number', 'user__email']
     readonly_fields = ['booking_reference', 'created_at', 'updated_at']
-    inlines = [PassengerInline, BookingPaymentInline, BookingHistoryInline]
+    inlines = [PassengerInline, InstallmentPaymentInline, BookingPaymentInline, BookingHistoryInline]
     date_hierarchy = 'created_at'
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('user', 'outbound_schedule__flight__route')
+
+@admin.register(InstallmentPayment)
+class InstallmentPaymentAdmin(admin.ModelAdmin):
+    list_display = [
+        'booking', 'installment_number', 'amount', 'due_date', 'payment_date', 
+        'status', 'points_earned', 'created_at'
+    ]
+    list_filter = ['status', 'payment_method', 'due_date', 'payment_date']
+    search_fields = ['booking__booking_reference', 'booking__user__phone_number']
+    readonly_fields = ['created_at', 'updated_at']
+    date_hierarchy = 'due_date'
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('booking__user')
 
 @admin.register(Passenger)
 class PassengerAdmin(admin.ModelAdmin):

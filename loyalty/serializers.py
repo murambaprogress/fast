@@ -36,14 +36,14 @@ class RedemptionCreateSerializer(serializers.ModelSerializer):
         
         # Check points based on redemption type
         points_required = {
-            'free_flight': 1000,
+            'free_flight': 1000,  # Threshold now 1000 for free flight
             'wallet_credit': 500,
-            'priority_boarding': 200,
-            'lounge_access': 800,
-            'extra_baggage': 400,
+            'priority_boarding': 150,
+            'lounge_access': 700,
+            'extra_baggage': 300,
         }
         
-        required = points_required.get(data['redemption_type'], 1000)
+        required = points_required.get(data['redemption_type'], 500)
         if loyalty_account.points < required:
             raise serializers.ValidationError(
                 f"Insufficient points. Required: {required}, Available: {loyalty_account.points}"
