@@ -55,7 +55,8 @@ ROOT_URLCONF = 'fastjet_backend.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        # Add frontend dist so index.html is served by TemplateView / fallback
+        'DIRS': [],  # will append dynamically after FRONTEND_DIST definition
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -75,11 +76,12 @@ WSGI_APPLICATION = 'fastjet_backend.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'fastjet_loyalty_system',
-        'USER': 'root',
-        'PASSWORD': '',  # Default for XAMPP
-        'HOST': '127.0.0.1',
-        'PORT': '3306',
+        'NAME': os.getenv('DB_NAME', 'fastjet_loyalty_system'),
+        'USER': os.getenv('DB_USER', 'root'),
+        'PASSWORD': os.getenv('DB_PASSWORD', ''),
+        'HOST': os.getenv('DB_HOST', '127.0.0.1'),
+        'PORT': os.getenv('DB_PORT', '3306'),
+        'OPTIONS': {'charset': 'utf8mb4'},
     }
 }
 
@@ -112,21 +114,17 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
 STATIC_URL = '/static/'
+# Collected static files target
+STATIC_ROOT = BASE_DIR / 'static'
 
-# Directory where collected static files will be placed (python manage.py collectstatic)
-STATIC_ROOT = os.path.join(BASE_DIR, 'collected_static')
+# Frontend (Vite) dist directory
+FRONTEND_DIST = BASE_DIR.parent.parent / 'fastjet-sky-rewards-hub' / 'dist'
 
-# Frontend (Vite) build output path (we'll set Vite to emit here) and serve via Django
-FRONTEND_DIST = os.path.join(BASE_DIR.parent.parent, 'fastjet-sky-rewards-hub', 'dist')
-
-# Add the built assets directory to STATICFILES_DIRS so Django can find hashed bundles
-STATICFILES_DIRS = [
-    # Include the dist assets if it exists (guards allow backend to run before first build)
-    *( [FRONTEND_DIST] if os.path.isdir(FRONTEND_DIST) else [] ),
-]
+# Added hashed JS/CSS and index.html directory (only if exists to avoid startup errors before first build)
+STATICFILES_DIRS = [p for p in [FRONTEND_DIST] if p.exists()]
 
 MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+MEDIA_ROOT = BASE_DIR / 'media'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
@@ -142,17 +140,17 @@ EMAIL_HOST_USER = 'murambaprogress@gmail.com'
 EMAIL_HOST_PASSWORD = 'ghnd xylw gfcg sdwd'  # You'll need to generate an app password in your Google account
 DEFAULT_FROM_EMAIL = 'FastJet Loyalty <murambaprogress@gmail.com>'
 
-TWILIO_ACCOUNT_SID = "ACc574e043f52d83ceefd946699e9a7c45"
-TWILIO_AUTH_TOKEN = "a053f5389d9cac8429183bb3047e83a2"
-TWILIO_SMS_FROM = "+12709185346"
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_SMS_FROM = os.getenv("TWILIO_SMS_FROM", "")
 
 # Frontend URL for verification links
-FRONTEND_URL = 'http://localhost:8080/'  # Replace with your actual frontend URL
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:8080/')
 
 # Admin credentials
-ADMIN_PHONE = "+2639999999999" # Use your actual admin phone number
-ADMIN_PASSWORD = "fastjetv1" # Use a strong password in production
-ADMIN_EMAIL = "murambaprogress@gmail.com" # Use your actual admin email
+ADMIN_PHONE = os.getenv('ADMIN_PHONE', '+2639999999999')
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'fastjetv1')
+ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'murambaprogress@gmail.com')
 
 # Django REST Framework settings
 REST_FRAMEWORK = {
@@ -168,5 +166,9 @@ REST_FRAMEWORK = {
 # Add this line to your settings.py
 AUTHENTICATION_BACKENDS = [
     'users.backends.EmailOrPhoneBackend',
-    'django.contrib.auth.backends.ModelBackend', # Keep the default backend
+    'django.contrib.auth.backends.ModelBackend',  # Keep the default backend
 ]
+
+# Append FRONTEND_DIST to template dirs late (after its definition) if present
+if FRONTEND_DIST.exists():
+    TEMPLATES[0]['DIRS'].append(str(FRONTEND_DIST))
