@@ -21,6 +21,8 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.contrib.auth.hashers import make_password
+from datetime import timedelta
+import time
 
 from .serializers import (
     UserRegistrationSerializer,
@@ -87,36 +89,46 @@ def send_admin_otp_email_and_sms(user):
     stored_otp_data = admin_otp_storage.get(admin_user_id)
     if stored_otp_data and timezone.now() <= stored_otp_data['expiry']:
         print(f"[DEBUG] Existing OTP is still valid. OTP: {stored_otp_data['otp']}, Expiry: {stored_otp_data['expiry']}")
-        return False
+        return False, str(stored_otp_data['otp']).zfill(6)
 
     # Generate a 6-digit OTP
-    otp_code = generate_otp()
-    # Format as string with leading zeros if needed
-    otp_string = str(otp_code).zfill(6)
+    otp_string = str(generate_otp()).zfill(6)
     
     subject = 'FastJet Admin Login - OTP Verification'
     message = f"Your OTP code for admin dashboard access is: {otp_string}\nThis code will expire in 10 minutes."
     try:
         # Send email
-        send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [ADMIN_EMAIL], fail_silently=False)
+        send_mail(
+            subject,
+            message,
+            settings.DEFAULT_FROM_EMAIL,
+            [ADMIN_EMAIL],
+            fail_silently=False
+        )
 
         # Send SMS
         twilio_client = get_twilio_client()
         if twilio_client:
             message_body = f"FastJet OTP: {otp_string}. Expires in 10 min."
-            twilio_client.messages.create(body=message_body, from_=settings.TWILIO_SMS_FROM, to=ADMIN_PHONE)
+            twilio_client.messages.create(
+                body=message_body,
+                from_=settings.TWILIO_SMS_FROM,
+                to=ADMIN_PHONE
+            )
 
         # Store the OTP in admin_otp_storage
         admin_otp_storage[admin_user_id] = {
             "otp": otp_string,
-            "expiry": timezone.now() + timezone.timedelta(minutes=10),
+            "expiry": timezone.now() + timedelta(minutes=10),
             "attempts": 0
         }
-        print(f"[DEBUG] New OTP generated and stored. OTP: {otp_code}, Expiry: {admin_otp_storage[admin_user_id]['expiry']}")
-        return True
+        print(
+            f"[DEBUG] New OTP generated and stored. OTP: {otp_string}, Expiry: {admin_otp_storage[admin_user_id]['expiry']}"
+        )
+        return True, otp_string
     except Exception as e:
         print(f"[DEBUG] Failed to send admin OTP email or SMS: {e}")
-        return False
+        return False, None
 
 # --- Registration ---
 class RegisterView(APIView):
@@ -137,9 +149,21 @@ class RegisterView(APIView):
                if created:
                    loyalty_account.add_points(50, "Welcome bonus - 50 points for new account registration")
 
-               # Send OTP via SMS
+               # Send OTP via SMS and Email to the user
                if user.phone_number != ADMIN_PHONE:
                    send_user_otp_sms(user.phone_number, user.email_verification_code)
+               try:
+                   otp_str = str(user.email_verification_code).zfill(6)
+                   send_mail(
+                       'FastJet Email Verification Code',
+                       f'Your verification code is: {otp_str}. It expires in 10 minutes.',
+                       settings.DEFAULT_FROM_EMAIL,
+                       [user.email],
+                       fail_silently=False,
+                   )
+                   print(f"[DEBUG] Sent verification email with OTP {otp_str} to {user.email}")
+               except Exception as e:
+                   print(f"[WARN] Failed to send verification email to {user.email}: {e}")
 
                EmailVerificationLog.objects.create(
                    user=user,
@@ -161,7 +185,7 @@ class RegisterView(APIView):
                }, status=status.HTTP_201_CREATED)
            except Exception as e:
                print(f"Error saving user: {e}")  # Debugging log
-               return Response({"error": "An error occurred while saving the user."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+               return Response({"code": "SERVER_ERROR", "message": "An error occurred while saving the user."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
        else:
            print(f"Validation errors: {serializer.errors}")  # Debugging log
        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -193,9 +217,21 @@ class ResendVerificationView(APIView):
            user.email_verification_code = generate_otp()
            user.save()
            
-           # Send the new OTP via SMS
+           # Send the new OTP via SMS and Email
            if user.phone_number != ADMIN_PHONE:
                send_user_otp_sms(user.phone_number, user.email_verification_code)
+           try:
+               otp_str = str(user.email_verification_code).zfill(6)
+               send_mail(
+                   'FastJet Email Verification Code',
+                   f'Your verification code is: {otp_str}. It expires in 10 minutes.',
+                   settings.DEFAULT_FROM_EMAIL,
+                   [user.email],
+                   fail_silently=False,
+               )
+               print(f"[DEBUG] Resent verification email with OTP {otp_str} to {user.email}")
+           except Exception as e:
+               print(f"[WARN] Failed to resend verification email to {user.email}: {e}")
            
            print(f"[DEBUG] Resent 6-digit OTP: {user.email_verification_code} to {user.phone_number}")
            return Response({"message": "Verification code sent to your phone.", "phone_number": user.phone_number}, status=status.HTTP_200_OK)
@@ -204,6 +240,8 @@ class ResendVerificationView(APIView):
 # --- Login ---
 class LoginView(APIView):
     permission_classes = [AllowAny]
+    # Disable SessionAuthentication to avoid CSRF requirement for this token-based login endpoint
+    authentication_classes = []
 
     def post(self, request):
         identifier = request.data.get("identifier")
@@ -211,7 +249,7 @@ class LoginView(APIView):
         otp_code = request.data.get("otp_code")  # Added to capture OTP for admin users
 
         if not identifier or not password:
-            return Response({"error": "Please provide both an identifier and a password."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"code": "ERROR", "message": "Please provide both an identifier and a password."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Check if identifier is email or phone number
         if "@" in identifier:
@@ -223,16 +261,16 @@ class LoginView(APIView):
             user = User.objects.get(user_query)
         except User.DoesNotExist:
             print(f"Login failed: User with identifier '{identifier}' does not exist.")
-            return Response({"error": "Invalid identifier or password."}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response({"code": "AUTH_ERROR", "message": "Invalid identifier or password."}, status=status.HTTP_401_UNAUTHORIZED)
 
         user = authenticate(request, username=user.email, password=password)
         if user:
             print(f"Login successful for user: {user.email}")
             if not user.email_verified:
-                return Response({"error": "Email not verified. Please verify your email before logging in.", "requires_verification": True, "email": user.email}, status=status.HTTP_403_FORBIDDEN)
+                return Response({"code": "AUTH_ERROR", "message": "Email not verified. Please verify your email before logging in.", "requires_verification": True, "email": user.email}, status=status.HTTP_403_FORBIDDEN)
             if user.user_type in ['corporate', 'student', 'club'] and not user.is_approved:
                 status_message = f"Your {user.user_type} account has been declined by admin." if user.approval_comment else f"Your {user.user_type} account is currently under review by admin."
-                return Response({"error": status_message, "account_status": "declined" if user.approval_comment else "pending_approval", "approval_comment": user.approval_comment}, status=status.HTTP_403_FORBIDDEN)
+                return Response({"code": "AUTH_ERROR", "message": status_message, "account_status": "declined" if user.approval_comment else "pending_approval", "approval_comment": user.approval_comment}, status=status.HTTP_403_FORBIDDEN)
 
             token, _ = Token.objects.get_or_create(user=user)
             
@@ -244,7 +282,7 @@ class LoginView(APIView):
                     # Verify OTP if provided
                     stored_otp_data = admin_otp_storage.get(admin_user_id)
                     if not stored_otp_data or timezone.now() > stored_otp_data['expiry']:
-                        return Response({"error": "Invalid or expired OTP", "requires_otp": True, "admin_user_id": admin_user_id}, status=status.HTTP_403_FORBIDDEN)
+                        return Response({"code": "OTP_ERROR", "message": "Invalid or expired OTP", "requires_otp": True, "admin_user_id": admin_user_id}, status=status.HTTP_403_FORBIDDEN)
                     
                     # Format both OTPs as 6-digit strings for comparison
                     formatted_stored_otp = str(stored_otp_data['otp']).zfill(6)
@@ -252,52 +290,101 @@ class LoginView(APIView):
                     
                     if formatted_stored_otp != formatted_provided_otp:
                         print(f"[DEBUG] OTP mismatch in login. Expected: {formatted_stored_otp}, Provided: {formatted_provided_otp}")
-                        return Response({"error": "Invalid OTP code", "requires_otp": True, "admin_user_id": admin_user_id}, status=status.HTTP_403_FORBIDDEN)
+                        return Response({"code": "OTP_ERROR", "message": "Invalid OTP code", "requires_otp": True, "admin_user_id": admin_user_id}, status=status.HTTP_403_FORBIDDEN)
                     
                     # OTP verified successfully
                     del admin_otp_storage[admin_user_id]
                 else:
-                    # Generate and send OTP
-                    send_admin_otp_email_and_sms(user)
+                    # Generate and send OTP, and persist in session
+                    success, otp_str = send_admin_otp_email_and_sms(user)
+                    try:
+                        # If no new OTP was generated but an existing one is valid, use it
+                        if not success and not otp_str:
+                            existing = admin_otp_storage.get(admin_user_id)
+                            if existing:
+                                otp_str = str(existing.get('otp')).zfill(6)
+                        if otp_str:
+                            request.session['admin_otp'] = {
+                                'user_id': admin_user_id,
+                                'otp': otp_str,
+                                'expiry_ts': int((timezone.now() + timedelta(minutes=10)).timestamp())
+                            }
+                            request.session.modified = True
+                    except Exception as e:
+                        print(f"[WARN] Failed to store admin OTP in session: {e}")
                     return Response({
                         "message": "OTP sent to your email and phone",
                         "requires_otp": True,
                         "admin_user_id": admin_user_id
                     }, status=status.HTTP_200_OK)
             
+            # Check for first login welcome points
+            if not user.welcome_points_awarded and not user.is_staff:
+                from loyalty.models import LoyaltyAccount
+                loyalty_account, _ = LoyaltyAccount.objects.get_or_create(user=user)
+                loyalty_account.add_points(10, "Welcome bonus - 10 points for first login")
+                user.welcome_points_awarded = True
+                user.save()
+            
             # Regular users don't need OTP
             return Response({
-                "message": "Login successful",
+                "message": "Login successful" + (". Welcome bonus of 10 points awarded!" if not user.welcome_points_awarded else ""),
                 "token": token.key,
                 "user": UserSerializer(user).data,
                 "is_staff": user.is_staff,
             }, status=status.HTTP_200_OK)
-
-        print(f"Login failed: Authentication failed for identifier '{identifier}'.")
-        return Response({"error": "Invalid identifier or password."}, status=status.HTTP_401_UNAUTHORIZED)
+        else:
+            print(f"Login failed: Authentication failed for identifier '{identifier}'.")
+            return Response({"code": "AUTH_ERROR", "message": "Invalid identifier or password."}, status=status.HTTP_401_UNAUTHORIZED)
 
 # --- Admin OTP Verification ---
 class AdminOTPVerificationView(APIView):
     permission_classes = [AllowAny]
+    # No session auth to avoid CSRF requirement for this public verification step
+    authentication_classes = []
 
     def post(self, request):
         admin_user_id = request.data.get("admin_user_id")
         otp_code = request.data.get("otp_code")
         stored_otp_data = admin_otp_storage.get(admin_user_id)
+        # Prefer OTP stored in session if present and not expired
+        session_otp = None
+        try:
+            session_otp = request.session.get('admin_otp') if hasattr(request, 'session') else None
+        except Exception:
+            session_otp = None
+
+        if session_otp and str(session_otp.get('user_id')) == str(admin_user_id):
+            now_ts = int(time.time())
+            if int(session_otp.get('expiry_ts', 0)) >= now_ts:
+                # Override stored_otp_data with session copy for verification
+                stored_otp_data = {
+                    'otp': str(session_otp.get('otp')).zfill(6),
+                    'expiry': timezone.now() + timedelta(seconds=session_otp.get('expiry_ts', now_ts) - now_ts),
+                    'attempts': 0
+                }
 
         if not stored_otp_data:
             print(f"[DEBUG] No OTP data found for admin_user_id: {admin_user_id}")
-            return Response({"error": "Invalid or expired OTP. Please login again."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"code": "OTP_ERROR", "message": "Invalid or expired OTP. Please login again."}, status=status.HTTP_400_BAD_REQUEST)
 
         if timezone.now() > stored_otp_data['expiry']:
             print(f"[DEBUG] OTP expired for admin_user_id: {admin_user_id}. Expiry: {stored_otp_data['expiry']}, Now: {timezone.now()}")
-            del admin_otp_storage[admin_user_id]
-            return Response({"error": "OTP expired. Please request a new OTP."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                del admin_otp_storage[admin_user_id]
+            except Exception:
+                pass
+            try:
+                if hasattr(request, 'session') and 'admin_otp' in request.session:
+                    del request.session['admin_otp']
+            except Exception:
+                pass
+            return Response({"code": "OTP_ERROR", "message": "OTP expired. Please request a new OTP."}, status=status.HTTP_400_BAD_REQUEST)
 
         if stored_otp_data.get('attempts', 0) >= 3:
             print(f"[DEBUG] OTP attempts exceeded for admin_user_id: {admin_user_id}. Attempts: {stored_otp_data['attempts']}")
             del admin_otp_storage[admin_user_id]
-            return Response({"error": "Invalid or expired OTP. Please login again."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"code": "OTP_ERROR", "message": "Invalid or expired OTP. Please login again."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Format both provided and stored OTPs as strings with exactly 6 digits
         formatted_otp_code = str(otp_code).zfill(6)
@@ -310,10 +397,18 @@ class AdminOTPVerificationView(APIView):
             if remaining <= 0:
                 del admin_otp_storage[admin_user_id]
 
-            return Response({"error": f"Invalid OTP. {remaining} attempts remaining."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"code": "OTP_ERROR", "message": f"Invalid OTP. {remaining} attempts remaining."}, status=status.HTTP_400_BAD_REQUEST)
 
         print(f"[DEBUG] OTP verified successfully for admin_user_id: {admin_user_id}")
-        del admin_otp_storage[admin_user_id]
+        try:
+            del admin_otp_storage[admin_user_id]
+        except Exception:
+            pass
+        try:
+            if hasattr(request, 'session') and 'admin_otp' in request.session:
+                del request.session['admin_otp']
+        except Exception:
+            pass
         admin_user = User.objects.get(id=admin_user_id)
         token, _ = Token.objects.get_or_create(user=admin_user)
         return Response({"message": "Admin OTP verified successfully.", "token": token.key, "admin_data": UserSerializer(admin_user).data}, status=status.HTTP_200_OK)
@@ -321,6 +416,8 @@ class AdminOTPVerificationView(APIView):
 # --- Resend Admin OTP ---
 class ResendAdminOTPView(APIView):
     permission_classes = [AllowAny]
+    # No session auth to avoid CSRF requirement
+    authentication_classes = []
     
     def post(self, request):
         admin_user_id = request.data.get("admin_user_id")
@@ -328,25 +425,36 @@ class ResendAdminOTPView(APIView):
         
         if not admin_user_id:
             return Response(
-                {"error": "Admin user ID is required"}, 
+                {"code": "VALIDATION_ERROR", "message": "Admin user ID is required"}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
         
         try:
-            # Generate new OTP
+            # Generate new OTP (padded string)
             otp_code = generate_otp()
+            otp_string = str(otp_code).zfill(6)
             
             # Store in admin_otp_storage with expiry time
             admin_otp_storage[admin_user_id] = {
-                "otp": otp_code,
-                "expiry": timezone.now() + timezone.timedelta(minutes=10),
+                "otp": otp_string,
+                "expiry": timezone.now() + timedelta(minutes=10),
                 "attempts": 0
             }
+            # Also store in session for robustness
+            try:
+                request.session['admin_otp'] = {
+                    'user_id': admin_user_id,
+                    'otp': otp_string,
+                    'expiry_ts': int((timezone.now() + timedelta(minutes=10)).timestamp())
+                }
+                request.session.modified = True
+            except Exception as e:
+                print(f"[WARN] Failed to store resend admin OTP in session: {e}")
             
             # Send OTP via email
             subject = 'FastJet Admin Login - OTP Verification (Resent)'
             message = f"""
-            Your new OTP code for admin dashboard access is: {otp_code}
+            Your new OTP code for admin dashboard access is: {otp_string}
             
             This code will expire in 10 minutes.
             
@@ -364,20 +472,20 @@ class ResendAdminOTPView(APIView):
             # Try to send SMS as well if possible
             twilio_client = get_twilio_client()
             if twilio_client:
-                message_body = f"FastJet New OTP: {otp_code}. Expires in 10 min."
+                message_body = f"FastJet New OTP: {otp_string}. Expires in 10 min."
                 twilio_client.messages.create(
                     body=message_body,
                     from_=settings.TWILIO_SMS_FROM,
                     to=ADMIN_PHONE
                 )
             
-            print(f"[DEBUG] New OTP generated and sent for admin_user_id: {admin_user_id}, OTP: {otp_code}")
+            print(f"[DEBUG] New OTP generated and sent for admin_user_id: {admin_user_id}, OTP: {otp_string}")
             return Response({"message": "New OTP sent successfully"}, status=status.HTTP_200_OK)
             
         except Exception as e:
             print(f"[ERROR] Failed to send admin OTP: {e}")
             return Response(
-                {"error": "Failed to send OTP. Please try again later."}, 
+                {"code": "SERVER_ERROR", "message": "Failed to send OTP. Please try again later."}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -389,26 +497,45 @@ class PasswordResetRequestView(APIView):
         if serializer.is_valid():
             identifier = serializer.validated_data['identifier']
             user = User.objects.get(Q(email__iexact=identifier) | Q(phone_number=identifier))
-            # OTP generation and sending disabled
-            # user.generate_password_reset_code()
-            
-            # For testing, set a default reset code
-            user.password_reset_code = '123456'
-            user.password_reset_expires = timezone.now() + timezone.timedelta(days=1)
-            user.save()
-            
-            # Disabled email and SMS sending
-            # send_mail(
-            #     'FastJet Password Reset Code',
-            #     f'Your password reset code is: {user.password_reset_code}. It will expire in 10 minutes.',
-            #     settings.DEFAULT_FROM_EMAIL,
-            #     [user.email],
-            #     fail_silently=True
-            # )
-            # if '@' not in identifier:
-            #     send_user_otp_sms(user.phone_number, f'FastJet Password Reset Code: {user.password_reset_code}')
-            
-            return Response({'message': 'Password reset functionality is temporarily simplified. Use code 123456 to reset your password.'}, status=status.HTTP_200_OK)
+
+            # Generate and store a new 6-digit reset code with 10-minute expiry
+            try:
+                if hasattr(user, 'generate_password_reset_code'):
+                    user.generate_password_reset_code()
+                else:
+                    user.password_reset_code = str(generate_otp()).zfill(6)
+                    user.password_reset_expires = timezone.now() + timedelta(minutes=10)
+                    user.save(update_fields=['password_reset_code', 'password_reset_expires'])
+            except Exception as e:
+                print(f"[ERROR] Failed generating password reset code for {identifier}: {e}")
+                return Response({'error': 'Failed to generate reset code. Please try again.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            # Send email (if configured)
+            try:
+                send_mail(
+                    'FastJet Password Reset Code',
+                    f'Your password reset code is: {user.password_reset_code}. It expires in 10 minutes.',
+                    settings.DEFAULT_FROM_EMAIL,
+                    [user.email],
+                    fail_silently=False
+                )
+                print(f"[DEBUG] Sent password reset email to {user.email} with code {user.password_reset_code}")
+            except Exception as e:
+                print(f"[WARN] Failed to send password reset email to {user.email}: {e}")
+
+            # Try SMS as well if Twilio is set up
+            try:
+                send_user_otp_sms(user.phone_number, user.password_reset_code)
+            except Exception as e:
+                print(f"[WARN] Failed to send password reset SMS to {user.phone_number}: {e}")
+
+            masked_email = user.email[:2] + '***@' + user.email.split('@')[-1] if user.email else None
+            masked_phone = user.phone_number[:-4] + '****' if user.phone_number and len(user.phone_number) > 4 else None
+            return Response({
+                'message': 'A password reset code has been sent to your email and phone (if available).',
+                'email': masked_email,
+                'phone': masked_phone
+            }, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class PasswordResetConfirmView(APIView):
@@ -430,20 +557,23 @@ class PasswordResetConfirmView(APIView):
 def user_approval(request, pk):
     user = get_object_or_404(User, pk=pk)
     if user.user_type not in ['corporate', 'student', 'club']:
-        return Response({"error": "Only corporate, student, and club accounts require approval."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"code": "ERROR", "message": "Only corporate, student, and club accounts require approval."}, status=status.HTTP_400_BAD_REQUEST)
+
     is_approved = request.data.get('is_approved')
     comment = request.data.get('comment', None)
     if is_approved is None:
-        return Response({"error": "is_approved field is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"code": "VALIDATION_ERROR", "message": "is_approved field is required."}, status=status.HTTP_400_BAD_REQUEST)
+
     user.is_approved = is_approved
     if is_approved:
         user.approval_comment = None
         send_mail('FastJet Account Approved', f'Dear {user.get_full_name()},\n\nYour {user.user_type} account has been approved.', settings.DEFAULT_FROM_EMAIL, [user.email])
     else:
         if not comment:
-            return Response({"error": "A comment is required when declining an account."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"code": "VALIDATION_ERROR", "message": "A comment is required when declining an account."}, status=status.HTTP_400_BAD_REQUEST)
         user.approval_comment = comment
         send_mail('FastJet Account Update', f'Dear {user.get_full_name()},\n\nRegarding your {user.user_type} account application:\nReason: {comment}', settings.DEFAULT_FROM_EMAIL, [user.email])
+
     user.save(update_fields=['is_approved', 'approval_comment'])
     return Response(UserSerializer(user).data, status=status.HTTP_200_OK)
 
@@ -458,7 +588,7 @@ def get_users(request):
     except Exception as e:
         # Log the error for debugging purposes
         print(f"Error in get_users endpoint: {e}")
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return Response({"code": "SERVER_ERROR", "message": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # --- Retrieve/Update/Delete a User ---
 @api_view(['PUT', 'DELETE'])

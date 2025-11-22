@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            padding: 20px;
+            background-color: #FFF8E1;
+            margin-bottom: 30px;
+        }
+        .logo {
+            max-width: 200px;
+            margin-bottom: 20px;
+        }
+        .content {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #eee;
+        }
+        .section {
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #eee;
+        }
+        .section:last-child {
+            border-bottom: none;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 2px solid #FFC20E;
+            font-size: 0.9em;
+            color: #666;
+        }
+        .reference {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 4px;
+            text-align: center;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <img src="{{ logo_url }}" alt="FastJet" class="logo">
+        <h1>New Credit Booking Application</h1>
+    </div>
+
+    <div class="content">
+        <div class="reference">
+            Reference: {{ booking.reference }}
+        </div>
+
+        <div class="section">
+            <h2>Customer Details</h2>
+            <p><strong>Name:</strong> {{ booking.customer_name }}</p>
+            <p><strong>National ID:</strong> {{ booking.national_id }}</p>
+            <p><strong>Bank:</strong> {{ booking.bank }}</p>
+            <p><strong>Account Number:</strong> {{ booking.bank_account }}</p>
+        </div>
+
+        <div class="section">
+            <h2>Flight Details</h2>
+            <p><strong>Route:</strong> {{ booking.route }}</p>
+            <p><strong>Travel Date:</strong> {{ booking.travel_date }}</p>
+            {% if booking.return_date %}
+            <p><strong>Return Date:</strong> {{ booking.return_date }}</p>
+            {% endif %}
+            <p><strong>Schedule ID:</strong> #{{ booking.schedule_id }}</p>
+        </div>
+
+        <div class="section">
+            <h2>Financial Details</h2>
+            <p><strong>Base Amount:</strong> {{ booking.currency }} {{ booking.base_amount }}</p>
+            <p><strong>Total with Interest:</strong> {{ booking.currency }} {{ booking.total_amount }}</p>
+            <p><strong>Repayment Period:</strong> {{ booking.repayment_months }} month(s)</p>
+            <p><strong>Monthly Interest Rate:</strong> {{ booking.interest_rate }}%</p>
+            <p><strong>Repayment Due:</strong> {{ booking.repayment_date }}</p>
+        </div>
+
+        <div class="section">
+            <p><strong>Application Status:</strong> Pending Review</p>
+            <p>Please review this application at your earliest convenience.</p>
+            <p>You can access the full application details in the FastJet admin portal.</p>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>This is an automated notification from FastJet Airways.</p>
+        <p>For support, contact <a href="mailto:support@fastjet.com">support@fastjet.com</a></p>
+    </div>
+</body>
+</html>

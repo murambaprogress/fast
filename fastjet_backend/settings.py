@@ -1,20 +1,33 @@
 from pathlib import Path
 import os
-from twilio.rest import Client
+from dotenv import load_dotenv
 
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
+# --------------------------------
+# Paths
+# --------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
+# Load environment variables from .env file
+load_dotenv(BASE_DIR / '.env')
 
-# SECURITY WARNING: keep the secret key used in production secret!
+# --------------------------------
+# Security / Debug
+# --------------------------------
 SECRET_KEY = 'django-insecure-7@7s40ts7&b4zoyp8p$(7&2u675!#fgpwhia=+qs-pj^$9n&zw'
-
-# SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = [h for h in os.getenv('ALLOWED_HOSTS', '127.0.0.1,localhost').split(',') if h]
+ALLOWED_HOSTS = [h for h in os.getenv('ALLOWED_HOSTS', '127.0.0.1,localhost,fastjet.pythonanywhere.com').split(',') if h]
+CSRF_TRUSTED_ORIGINS = [
+    'https://fastjet.pythonanywhere.com',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+]
+
+# Optional HTTPS hardening (safe defaults for PA)
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'False') == 'True'
+SESSION_COOKIE_SECURE = os.getenv('SESSION_COOKIE_SECURE', 'False') == 'True'
+CSRF_COOKIE_SECURE = os.getenv('CSRF_COOKIE_SECURE', 'False') == 'True'
 
 # Application definition
 INSTALLED_APPS = [
@@ -71,17 +84,21 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'fastjet_backend.wsgi.application'
 
-# Database
-# https://docs.djangoproject.com/en/4.2/ref/settings/#databases
+# --------------------------------
+# Database (XAMPP MySQL)
+# --------------------------------
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': os.getenv('DB_NAME', 'fastjet_loyalty_system'),
-        'USER': os.getenv('DB_USER', 'root'),
-        'PASSWORD': os.getenv('DB_PASSWORD', ''),
-        'HOST': os.getenv('DB_HOST', '127.0.0.1'),
-        'PORT': os.getenv('DB_PORT', '3306'),
-        'OPTIONS': {'charset': 'utf8mb4'},
+        'NAME': 'fastjet_loyalty_system',  # Use your actual database name
+        'USER': 'root',
+        'PASSWORD': '',  # No password for XAMPP default
+        'HOST': 'localhost',
+        'PORT': '3306',
+        'OPTIONS': {
+            'charset': 'utf8mb4',
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+        },
     }
 }
 
@@ -111,25 +128,39 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/4.2/howto/static-files/
+# --------------------------------
+# Static & Media (PythonAnywhere)
+# --------------------------------
 STATIC_URL = '/static/'
-# Collected static files target
-STATIC_ROOT = BASE_DIR / 'static'
-
-# Frontend (Vite) dist directory
-FRONTEND_DIST = BASE_DIR.parent.parent / 'fastjet-sky-rewards-hub' / 'dist'
-
-# Added hashed JS/CSS and index.html directory (only if exists to avoid startup errors before first build)
-STATICFILES_DIRS = [p for p in [FRONTEND_DIST] if p.exists()]
+STATIC_ROOT = BASE_DIR / 'staticfiles'  # map in PA: URL=/static/ → /home/fastjet/fastjet_backend/staticfiles
 
 MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_ROOT = BASE_DIR / 'media'         # map in PA: URL=/media/  → /home/fastjet/fastjet_backend/media
+
+# Source static directories with priority: project static/ first, then dist/
+PROJECT_STATIC = BASE_DIR / 'static'
+# FRONTEND_DIST should point to the built frontend `dist` in the monorepo root
+# Use parent.parent to reach the workspace root where `fastjet-sky-rewards-hub/dist` lives.
+FRONTEND_DIST = BASE_DIR.parent.parent / 'fastjet-sky-rewards-hub' / 'dist'
+
+STATICFILES_DIRS = [
+    p for p in [
+        PROJECT_STATIC,
+        FRONTEND_DIST if FRONTEND_DIST.exists() else None,
+    ] if p and p.exists()
+]
+
+# If you want Django templates to also find SPA index.html from dist, keep this:
+if FRONTEND_DIST.exists():
+    TEMPLATES[0]['DIRS'].append(str(FRONTEND_DIST))
+
+# Ensure media and static directories exist
+os.makedirs(MEDIA_ROOT, exist_ok=True)
+os.makedirs(STATIC_ROOT, exist_ok=True)
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-AUTHENTICATION_BACKENDS = ['users.backends.PhoneNumberBackend']
 
 # Email settings
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
@@ -140,9 +171,9 @@ EMAIL_HOST_USER = 'murambaprogress@gmail.com'
 EMAIL_HOST_PASSWORD = 'ghnd xylw gfcg sdwd'  # You'll need to generate an app password in your Google account
 DEFAULT_FROM_EMAIL = 'FastJet Loyalty <murambaprogress@gmail.com>'
 
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
-TWILIO_SMS_FROM = os.getenv("TWILIO_SMS_FROM", "")
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "ACc574e043f52d83ceefd946699e9a7c45")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "66091780cf652327039b917dc633c891")
+TWILIO_SMS_FROM = os.getenv("TWILIO_SMS_FROM", "+12709185346")
 
 # Frontend URL for verification links
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:8080/')
@@ -172,3 +203,43 @@ AUTHENTICATION_BACKENDS = [
 # Append FRONTEND_DIST to template dirs late (after its definition) if present
 if FRONTEND_DIST.exists():
     TEMPLATES[0]['DIRS'].append(str(FRONTEND_DIST))
+
+# --------------------------------
+# InnBucks Wallet Integration Settings
+# --------------------------------
+INNBUCKS_BASE_URL = os.getenv('INNBUCKS_BASE_URL', 'https://staging.innbucks.co.zw')
+INNBUCKS_API_KEY = os.getenv('INNBUCKS_API_KEY', 'a92f156a-7d31-40b8-8b27-a43ec8cd7fff')
+INNBUCKS_USERNAME = os.getenv('INNBUCKS_USERNAME', 'FastjetTestClientydvll8TO')
+INNBUCKS_PASSWORD = os.getenv('INNBUCKS_PASSWORD', 'Jf5UGIGNTKTuBjUwtI1f')
+INNBUCKS_ACCOUNT = os.getenv('INNBUCKS_ACCOUNT', '2008877953850')
+INNBUCKS_ENVIRONMENT = os.getenv('INNBUCKS_ENVIRONMENT', 'staging')
+
+# --------------------------------
+# Application Base URL for generating notification URLs
+# --------------------------------
+BASE_URL = os.getenv('BASE_URL', 'https://fastjet.pythonanywhere.com')
+
+# --------------------------------
+# EcoCash Wallet Integration Settings
+# --------------------------------
+# API credentials - Stored in .env file for security
+ECOCASH_API_USERNAME = os.getenv('ECOCASH_API_USERNAME')
+ECOCASH_API_PASSWORD = os.getenv('ECOCASH_API_PASSWORD')
+
+# Merchant details - Stored in .env file for security
+ECOCASH_MERCHANT_CODE = os.getenv('ECOCASH_MERCHANT_CODE')
+ECOCASH_MERCHANT_PIN = os.getenv('ECOCASH_MERCHANT_PIN')
+ECOCASH_MERCHANT_NUMBER = os.getenv('ECOCASH_MERCHANT_NUMBER')
+ECOCASH_MERCHANT_NAME = os.getenv('ECOCASH_MERCHANT_NAME')
+ECOCASH_SUPER_MERCHANT_NAME = os.getenv('ECOCASH_SUPER_MERCHANT_NAME')
+ECOCASH_TERMINAL_ID = os.getenv('ECOCASH_TERMINAL_ID')
+ECOCASH_LOCATION = os.getenv('ECOCASH_LOCATION')
+
+# Webhook/notification URL
+ECOCASH_NOTIFY_URL = os.getenv('ECOCASH_NOTIFY_URL')
+
+# Loyalty settings
+ECOCASH_POINTS_AWARD_RATE = float(os.getenv('ECOCASH_POINTS_AWARD_RATE', '0.02'))  # 2% of transaction amount
+
+# Test MSISDN for EcoCash sandbox/testing
+ECOCASH_TEST_MSISDN = os.getenv('ECOCASH_TEST_MSISDN')

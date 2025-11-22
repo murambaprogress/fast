@@ -56,9 +56,8 @@ def deduct_from_wallet(request, user_id, currency_code):
             wallet=wallet,
             currency=currency,
             amount='-' + str(amount),
-            transaction_type='deduct',
-            description=f'Booking payment in {currency_code}',
-            status='completed'
+            transaction_type='payment',
+            description=f'Booking payment in {currency_code}'
         )
         
         return Response({

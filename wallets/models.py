@@ -74,3 +74,89 @@ class WalletTransaction(models.Model):
 
     def __str__(self):
         return f"{self.wallet.user.phone_number} - {self.transaction_type} - {self.amount} {self.currency.code}"
+
+
+class ProcessedTransaction(models.Model):
+    """
+    Model to track processed BANCABC transactions for idempotency.
+    Prevents duplicate processing of the same transaction.
+    """
+    idempotency_key = models.CharField(max_length=255, unique=True)
+    transaction_id = models.CharField(max_length=255, db_index=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.ForeignKey(Currency, on_delete=models.CASCADE)
+    status = models.CharField(max_length=20, choices=[
+        ('processing', 'Processing'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ], default='processing')
+    bancabc_transaction_id = models.CharField(max_length=255, blank=True, null=True)
+    response_data = models.JSONField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        db_table = 'wallets_processedtransaction'
+
+
+class EcoCashTransaction(models.Model):
+    """
+    Model to track EcoCash transactions for top-ups and refunds.
+    Implements the idempotency pattern recommended in the integration plan.
+    """
+    TRANSACTION_TYPES = [
+        ('MER', 'Merchant Payment'),
+        ('REF', 'Refund'),
+    ]
+    
+    TRANSACTION_STATUS = [
+        ('initiated', 'Initiated'),
+        ('pending_subscriber', 'Pending Subscriber Validation'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+        ('refunded', 'Refunded'),
+    ]
+    
+    # Core transaction fields
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name='ecocash_transactions')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency_code = models.CharField(max_length=5)  # ZWG or USD
+    
+    # EcoCash specific fields
+    client_correlator = models.CharField(max_length=255, unique=True, db_index=True)  # For idempotency
+    reference_code = models.CharField(max_length=255, db_index=True)  # Merchant reference
+    server_reference_code = models.CharField(max_length=255, blank=True, null=True)  # EcoCash server reference
+    ecocash_reference = models.CharField(max_length=255, blank=True, null=True)  # EcoCash transaction reference
+    end_user_id = models.CharField(max_length=20)  # Customer phone number
+    
+    # Transaction metadata
+    transaction_type = models.CharField(max_length=5, choices=TRANSACTION_TYPES, default='MER')
+    status = models.CharField(max_length=20, choices=TRANSACTION_STATUS, default='initiated')
+    remarks = models.CharField(max_length=255, blank=True, null=True)  # Transaction description
+    
+    # For refund transactions
+    original_ecocash_reference = models.CharField(max_length=255, blank=True, null=True)
+    
+    # Processing metadata
+    notify_url = models.URLField(blank=True, null=True)
+    timeout_at = models.DateTimeField(blank=True, null=True)  # When the transaction will timeout
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    raw_request = models.JSONField(blank=True, null=True)  # Store raw request for debugging
+    raw_response = models.JSONField(blank=True, null=True)  # Store raw response for debugging
+    
+    class Meta:
+        db_table = 'wallets_ecocashtransaction'
+        ordering = ['-created_at']
+        
+    def __str__(self):
+        return f"{self.end_user_id} - {self.transaction_type} - {self.amount} {self.currency_code} - {self.status}"
+        indexes = [
+            models.Index(fields=['transaction_id', 'status']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        return f"BANCABC Transaction: {self.transaction_id} - {self.status}"

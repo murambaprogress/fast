@@ -5,18 +5,24 @@ from django.views.decorators import csrf
 from django.views.decorators import http
 from django.utils.decorators import method_decorator
 from django.views import View
+from django.db import models
 from rest_framework import generics, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from destinations.models import Destination
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date, time, timezone as dt_timezone
+import logging
 from decimal import Decimal
 from django.utils import timezone
 from .models import Booking, Flight, FlightSchedule, InstallmentPayment, BookingHistory
 from .serializers import BookingSerializer, FlightSerializer, FlightScheduleSerializer, FlightScheduleCreateSerializer
 from .models import BOOKING_STATUS_CHOICES
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Flight Management Views
 class FlightListCreateView(generics.ListCreateAPIView):
@@ -56,6 +62,7 @@ class FlightScheduleDetailView(generics.RetrieveUpdateDestroyAPIView):
 # Flight Search View
 class FlightSearchView(APIView):
     permission_classes = [AllowAny]  # Allow unauthenticated flight search
+    logger = logging.getLogger(__name__)
     
     def get(self, request):
         """Get all active flights without filtering"""
@@ -71,26 +78,210 @@ class FlightSearchView(APIView):
         })
     
     def post(self, request):
-        from_destination = request.data.get('from_destination')
-        to_destination = request.data.get('to_destination')
-        departure_date = request.data.get('departure_date')
+        """Search for flights with tolerant matching.
+
+        Accepts destination name (case-insensitive) or numeric destination id.
+        Uses date-only filtering to avoid timezone boundary issues.
+        """
+        # Optional debug flag to expose filter-stage counts (use ?debug=true or {"debug": true})
+        def _to_bool(val):
+            if isinstance(val, bool):
+                return val
+            if val is None:
+                return False
+            s = str(val).strip().lower()
+            return s in {"1", "true", "yes", "y", "on"}
+
+        debug_flag = False
+        try:
+            # prefer query param if available (DRF Request has query_params)
+            if hasattr(request, 'query_params') and request.query_params is not None:
+                debug_flag = _to_bool(request.query_params.get('debug'))
+        except Exception:
+            pass
+        if not debug_flag:
+            try:
+                debug_flag = _to_bool(request.data.get('debug'))
+            except Exception:
+                pass
+        from_destination = request.data.get('from_destination') or None
+        to_destination = request.data.get('to_destination') or None
+        departure_date = request.data.get('departure_date') or None
         return_date = request.data.get('return_date')
         trip_type = request.data.get('trip_type')
         adult_count = request.data.get('adult_count', 1)
         child_count = request.data.get('child_count', 0)
 
-        flights = FlightSchedule.objects.filter(is_active=True)
+        all_qs = FlightSchedule.objects.all()
+        flights = all_qs.filter(is_active=True)
+        diagnostics = {}
+        if debug_flag:
+            try:
+                diagnostics['total_schedules'] = all_qs.count()
+                diagnostics['total_active'] = flights.count()
+            except Exception:
+                pass
+
+        # Helper to apply destination filter flexibly, prefer direct FK if available
+        def apply_destination_filter(qs, field_name, value):
+            if not value:
+                return qs
+            try:
+                # If numeric, treat as destination id
+                if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
+                    dest_id = int(value)
+                    # Try direct FK first
+                    if field_name in ['from_destination', 'to_destination']:
+                        return qs.filter(**{f"{field_name}_id": dest_id})
+                    # Fallback to original path
+                    return qs.filter(**{f"{field_name}_id": dest_id})
+                # Try exact match by name or airport code
+                dest = Destination.objects.filter(
+                    models.Q(name__iexact=value) |
+                    models.Q(airport_code__iexact=value)
+                ).first()
+                if dest:
+                    if field_name in ['from_destination', 'to_destination']:
+                        return qs.filter(**{f"{field_name}_id": dest.id})
+                    return qs.filter(**{f"{field_name}_id": dest.id})
+                # If no exact match found, try partial match on name
+                if field_name in ['from_destination', 'to_destination']:
+                    return qs.filter(**{f"{field_name}__name__icontains": value})
+                return qs.filter(**{f"{field_name}__name__icontains": value})
+            except Exception as e:
+                self.logger.error(f"Error in apply_destination_filter: {str(e)}")
+                return qs.none()  # Return empty queryset on error
+
+        # Try direct FK first, fallback to original path if needed
+        # Adjust these field names if your model uses direct FKs
+        from_field = 'flight__route__from_destination'
+        to_field = 'flight__route__to_destination'
+        # If your FlightSchedule has direct FKs, use:
+        # from_field = 'from_destination'
+        # to_field = 'to_destination'
 
         if from_destination:
-            flights = flights.filter(flight__route__from_destination__name=from_destination)
+            before = flights.count() if debug_flag else None
+            flights = apply_destination_filter(flights, from_field, from_destination)
+            if debug_flag:
+                diagnostics['from_field'] = from_field
+                diagnostics['before_from_filter'] = before
+                diagnostics['after_from_filter'] = flights.count()
         if to_destination:
-            flights = flights.filter(flight__route__to_destination__name=to_destination)
+            before = flights.count() if debug_flag else None
+            flights = apply_destination_filter(flights, to_field, to_destination)
+            if debug_flag:
+                diagnostics['to_field'] = to_field
+                diagnostics['before_to_filter'] = before
+                diagnostics['after_to_filter'] = flights.count()
+
         if departure_date:
-            flights = flights.filter(departure_time__date=departure_date)
+            # Prefer a direct date lookup to avoid timezone boundary issues across environments
+            try:
+                if isinstance(departure_date, str):
+                    dep_dt = datetime.strptime(departure_date, '%Y-%m-%d').date()
+                elif isinstance(departure_date, date):
+                    dep_dt = departure_date
+                else:
+                    dep_dt = None
+                if dep_dt:
+                    before_date_filter = flights.count()
+                    flights = flights.filter(departure_time__date=dep_dt)
+                    after_date_filter = flights.count()
+                    if debug_flag:
+                        diagnostics['before_date_filter'] = before_date_filter
+                        diagnostics['after_date_filter'] = after_date_filter
+                    # If nothing matched, fall back to an explicit UTC day window
+                    if after_date_filter == 0:
+                        tz = dt_timezone.utc
+                        start = timezone.make_aware(datetime.combine(dep_dt, time.min), tz)
+                        end = timezone.make_aware(datetime.combine(dep_dt + timedelta(days=1), time.min), tz)
+                        fallback_qs = FlightSchedule.objects.filter(is_active=True)
+                        if from_destination:
+                            fallback_qs = apply_destination_filter(fallback_qs, 'flight__route__from_destination', from_destination)
+                        if to_destination:
+                            fallback_qs = apply_destination_filter(fallback_qs, 'flight__route__to_destination', to_destination)
+                        flights = fallback_qs.filter(departure_time__gte=start, departure_time__lt=end)
+                        self.logger.info(
+                            "FlightSearch fallback UTC window used for date=%s (before=%s after_date=%s)",
+                            dep_dt, before_date_filter, flights.count()
+                        )
+                        if debug_flag:
+                            diagnostics['fallback_utc_window_count'] = flights.count()
+            except Exception as ex:
+                self.logger.warning(f"FlightSearchView: failed to parse departure_date={departure_date}: {ex}")
+
+        flights = flights.select_related('flight', 'flight__route', 'flight__route__from_destination', 'flight__route__to_destination')
+
+        # Logging for diagnostics in production
+        try:
+            total = flights.count()
+            self.logger.info(
+                "FlightSearch payload from=%s to=%s date=%s -> matches=%s",
+                from_destination, to_destination, departure_date, total
+            )
+            if total == 0:
+                # Auto diagnostics in logs to help prod triage without changing API
+                diag_qs = all_qs
+                if from_destination:
+                    diag_qs = apply_destination_filter(diag_qs, 'flight__route__from_destination', from_destination)
+                if to_destination:
+                    diag_qs = apply_destination_filter(diag_qs, 'flight__route__to_destination', to_destination)
+                pre_date = diag_qs.count()
+                post_date = None
+                post_date_utc_window = None
+                if departure_date:
+                    try:
+                        if isinstance(departure_date, str):
+                            dep_dt_d = datetime.strptime(departure_date, '%Y-%m-%d').date()
+                        elif isinstance(departure_date, date):
+                            dep_dt_d = departure_date
+                        else:
+                            dep_dt_d = None
+                        if dep_dt_d:
+                            post_date = diag_qs.filter(departure_time__date=dep_dt_d).count()
+                            tz = dt_timezone.utc
+                            start = timezone.make_aware(datetime.combine(dep_dt_d, time.min), tz)
+                            end = timezone.make_aware(datetime.combine(dep_dt_d + timedelta(days=1), time.min), tz)
+                            post_date_utc_window = diag_qs.filter(departure_time__gte=start, departure_time__lt=end).count()
+                    except Exception:
+                        pass
+                self.logger.info(
+                    "FlightSearch zero-match diag: total_schedules=%s active=%s candidates_no_is_active=%s candidates_date=%s candidates_utc_window=%s",
+                    all_qs.count(),
+                    FlightSchedule.objects.filter(is_active=True).count(),
+                    pre_date,
+                    post_date,
+                    post_date_utc_window,
+                )
+        except Exception:
+            pass
+
+        # Additional diagnostics: see if removing is_active yields candidates (to detect data issues)
+        if debug_flag:
+            try:
+                debug_qs = all_qs
+                if from_destination:
+                    debug_qs = apply_destination_filter(debug_qs, 'flight__route__from_destination', from_destination)
+                if to_destination:
+                    debug_qs = apply_destination_filter(debug_qs, 'flight__route__to_destination', to_destination)
+                if departure_date:
+                    if isinstance(departure_date, str):
+                        dep_dt = datetime.strptime(departure_date, '%Y-%m-%d').date()
+                    elif isinstance(departure_date, date):
+                        dep_dt = departure_date
+                    else:
+                        dep_dt = None
+                    if dep_dt:
+                        debug_qs = debug_qs.filter(departure_time__date=dep_dt)
+                diagnostics['matches_without_is_active'] = debug_qs.count()
+                diagnostics['sample_ids_without_is_active'] = list(debug_qs.values_list('id', flat=True)[:10])
+            except Exception:
+                pass
 
         outbound_serializer = FlightScheduleSerializer(flights, many=True)
 
-        return Response({
+        response_payload = {
             "trip_type": trip_type,
             "from_destination": from_destination,
             "to_destination": to_destination,
@@ -103,7 +294,12 @@ class FlightSearchView(APIView):
             },
             "outbound_flights": outbound_serializer.data,
             "return_flights": [],
-        })
+        }
+
+        if debug_flag and diagnostics:
+            response_payload['diagnostics'] = diagnostics
+
+        return Response(response_payload)
 
 User = get_user_model()
 
@@ -114,18 +310,29 @@ class CreateBookingView(APIView):
     def post(self, request):
         try:
             data = request.data
-            user_id = data.get('user_id')
-            if not user_id:
-                return Response({'error': 'User ID is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-            user = User.objects.get(id=user_id)
+            # Use authenticated user instead of requiring user_id in payload
+            user = request.user
             flight_schedule_id = data.get('flight_schedule_id')
             return_schedule_id = data.get('return_schedule_id')
             adult_count = int(data.get('adult_count', 1))
             child_count = int(data.get('child_count', 0))
             payment_method = data.get('payment_method')
             trip_type = data.get('trip_type')
-            is_installment = data.get('is_installment', False)
+            # Defensive handling: do not trust client-provided `is_installment` flag.
+            # Only treat a booking as an installment when the payment_method is
+            # explicitly 'installment' AND the client provides an explicit
+            # confirmation token/flag `confirm_installment` (to avoid accidental
+            # classification from other flows like credit applications).
+            def _to_bool(v):
+                if isinstance(v, bool):
+                    return v
+                if v is None:
+                    return False
+                s = str(v).strip().lower()
+                return s in {"1", "true", "yes", "y", "on"}
+
+            confirm_installment = _to_bool(data.get('confirm_installment'))
+            is_installment = True if (payment_method == 'installment' and confirm_installment) else False
 
             total_passengers = adult_count + child_count
             flight_schedule = FlightSchedule.objects.get(id=flight_schedule_id)
@@ -224,7 +431,33 @@ class CreateBookingView(APIView):
                 loyalty_account.add_points(earned_points, f'Earned 50 points for booking {booking.booking_reference}')
 
                 booking.points_earned = earned_points
-                booking.save()
+                # If the client intends to pay via wallet, the frontend typically
+                # deducts funds immediately after booking creation. When that
+                # happens we should consider the booking as paid/confirmed so it
+                # does not remain in 'pending' status while money and points
+                # have already been applied.
+                booking.payment_status = 'paid'
+                # Award loyalty points equal to 10% of booking total for wallet payments (skip installment bookings)
+                earned_points = 0
+                if payment_method == 'wallet' and not is_installment:
+                    # Calculate 10% of total price
+                    earned_points = int(total_price * Decimal('0.1'))
+                    from loyalty.models import LoyaltyAccount
+                    loyalty_account, _ = LoyaltyAccount.objects.get_or_create(user=user)
+                    if earned_points > 0:
+                        loyalty_account.add_points(earned_points, f'Earned {earned_points} points for booking {booking.booking_reference}')
+                    booking.points_earned = earned_points
+                    try:
+                        BookingHistory.objects.create(
+                            booking=booking,
+                            status_from='pending',
+                            status_to='confirmed',
+                            changed_by=request.user,
+                            reason='Wallet payment completed during booking creation'
+                        )
+                    except Exception:
+                        # Non-fatal: history creation should not break booking flow
+                        pass
 
             return Response({
                 'booking_id': booking.id,
@@ -250,22 +483,43 @@ class ProcessPaymentView(APIView):
     def post(self, request):
         try:
             data = request.data
+            logger.debug('[ProcessPayment] payload=%s', data)
             booking_id = data.get('booking_id')
             payment_method = data.get('payment_method')
             installment_number = data.get('installment_number')  # For installment payments
-            
-            booking = Booking.objects.get(id=booking_id)
+            if not booking_id:
+                logger.warning('[ProcessPayment] missing booking_id in payload')
+                return Response({'error': 'booking_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                booking = Booking.objects.get(id=booking_id)
+            except Booking.DoesNotExist:
+                logger.warning('[ProcessPayment] booking not found id=%s', booking_id)
+                return Response({'error': 'Booking not found', 'booking_id': booking_id}, status=status.HTTP_404_NOT_FOUND)
             
             # Handle installment payment
             if booking.is_installment:
-                # Require installment_number for any installment payment to avoid incorrectly confirming booking
+                # If the booking is an installment plan, prefer the explicit installment_number
+                # but if the client omits it, auto-select the next pending installment so
+                # common frontends that only intend to pay the next due installment don't fail.
                 if installment_number:
                     return self._process_installment_payment(booking, installment_number, payment_method)
-                else:
-                    return Response({
-                        'error': 'installment_number required for installment bookings',
-                        'message': 'Provide installment_number to pay installments. Status remains laybuy until all installments are paid.'
-                    }, status=status.HTTP_400_BAD_REQUEST)
+                # Attempt to find the next pending installment automatically
+                try:
+                    next_pending = InstallmentPayment.objects.filter(booking=booking, status='pending').order_by('installment_number').first()
+                except Exception:
+                    next_pending = None
+
+                if next_pending:
+                    logger.info('[ProcessPayment] auto-selected installment=%s for booking=%s', next_pending.installment_number, booking_id)
+                    return self._process_installment_payment(booking, next_pending.installment_number, payment_method)
+
+                # No pending installment found - return a helpful 400 payload
+                logger.warning('[ProcessPayment] no pending installments for booking=%s payload=%s', booking_id, data)
+                return Response({
+                    'error': 'installment_number required for installment bookings',
+                    'message': 'No pending installments found. Provide installment_number to target a specific installment.'
+                }, status=status.HTTP_400_BAD_REQUEST)
             
             # Handle points payment
             if payment_method == 'points':
@@ -355,8 +609,12 @@ class ProcessPaymentView(APIView):
                 
                 if wallet_balance.balance < installment.amount:
                     return Response({
-                        'error': 'Insufficient wallet balance for installment payment'
-                    }, status=status.HTTP_400_BAD_REQUEST)
+                        'code': 'INSUFFICIENT_FUNDS',
+                        'message': f'Insufficient wallet balance for installment payment. Required {installment.amount}, available {wallet_balance.balance}.',
+                        'required': str(installment.amount),
+                        'available': str(wallet_balance.balance),
+                        'currency': currency.code if 'currency' in locals() else booking.currency
+                    }, status=402)
                 
                 # Deduct amount from wallet
                 wallet_balance.balance -= installment.amount
@@ -562,20 +820,25 @@ def get_booking_detail(request, booking_id):
 @permission_classes([IsAuthenticated])
 def cancel_booking(request, booking_id):
     try:
-        booking = Booking.objects.get(id=booking_id)
+        # Use authenticated user
+        user = request.user
+        # Ensure the booking belongs to the authenticated user
+        booking = Booking.objects.get(id=booking_id, user=user)
         old_status = booking.status
+
+        # Update booking status
         booking.status = 'cancelled'
         booking.save()
-        
+
         # Create history record
         BookingHistory.objects.create(
             booking=booking,
             status_from=old_status,
             status_to='cancelled',
             changed_by=request.user,
-            reason='Cancelled by user'
+            reason=request.data.get('reason', 'Cancelled by user')
         )
-        
+
         return Response({'status': 'cancelled'})
     except Booking.DoesNotExist:
         return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
@@ -714,28 +977,34 @@ def get_admin_bookings(request):
 def update_booking_status(request, booking_id):
     """Update booking status (admin only)"""
     try:
-        if not request.user.is_staff:
+        # Use authenticated user
+        user = request.user
+        # Only admin can update booking status
+        if not user.is_staff:
             return Response({'error': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
-        
+
+        # Fetch booking
         booking = Booking.objects.get(id=booking_id)
-        new_status = request.data.get('status')
-        
-        if new_status not in dict(BOOKING_STATUS_CHOICES):
-            return Response({'error': 'Invalid status'}, status=status.HTTP_400_BAD_REQUEST)
-        
         old_status = booking.status
+
+        # New status must be provided in the payload
+        new_status = request.data.get('status') or request.data.get('new_status')
+        if not new_status:
+            return Response({'error': 'new status is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Update and save
         booking.status = new_status
         booking.save()
-        
+
         # Create history record
         BookingHistory.objects.create(
             booking=booking,
             status_from=old_status,
             status_to=new_status,
             changed_by=request.user,
-            reason=request.data.get('reason', f'Status updated by admin {request.user.phone_number}')
+            reason=request.data.get('reason', f'Status updated by admin {request.user.username}')
         )
-        
+
         return Response({'status': 'updated', 'new_status': new_status})
         
     except Booking.DoesNotExist:

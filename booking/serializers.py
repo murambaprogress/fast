@@ -134,12 +134,48 @@ class FlightScheduleSerializer(serializers.ModelSerializer):
     estimated_time = serializers.SerializerMethodField()
     distance = serializers.SerializerMethodField()
     point_threshold = serializers.SerializerMethodField()
+    # Convenience flattened fields expected by some frontend components
+    route = serializers.SerializerMethodField()
+    from_destination = serializers.SerializerMethodField()
+    to_destination = serializers.SerializerMethodField()
 
     class Meta:
         model = FlightSchedule
-        fields = '__all__'  # Includes all model fields
-        # Add computed fields explicitly if not using '__all__':
-        # fields = ['id', 'flight', 'departure_time', ..., 'price', 'currency', ...]
+        fields = '__all__'
+
+    def get_route(self, obj):
+        try:
+            r = obj.flight.route
+            return {
+                'id': r.id,
+                'from_destination': {
+                    'id': r.from_destination.id,
+                    'name': r.from_destination.name,
+                },
+                'to_destination': {
+                    'id': r.to_destination.id,
+                    'name': r.to_destination.name,
+                },
+                'price': str(r.price),
+                'currency': r.currency,
+                'estimated_time': r.estimated_time,
+                'distance': r.distance,
+                'point_threshold': r.point_threshold,
+            }
+        except Exception:
+            return None
+
+    def get_from_destination(self, obj):
+        try:
+            return obj.flight.route.from_destination.name
+        except Exception:
+            return ''
+
+    def get_to_destination(self, obj):
+        try:
+            return obj.flight.route.to_destination.name
+        except Exception:
+            return ''
 
     def get_price(self, obj):
         try:

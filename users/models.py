@@ -2,6 +2,7 @@ from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
 from django.utils import timezone
 from decimal import Decimal
+from datetime import timedelta
 import random
 import string
 
@@ -96,6 +97,7 @@ class User(AbstractUser):
    custom_institution = models.CharField(max_length=200, blank=True, null=True)
    student_id = models.CharField(max_length=100, blank=True, null=True)
    birth_certificate = models.FileField(upload_to='documents/birth_certificates/', blank=True, null=True)
+   welcome_points_awarded = models.BooleanField(default=False)
    
    # Club fields
    club_name = models.CharField(max_length=200, blank=True, null=True)
@@ -141,7 +143,7 @@ class User(AbstractUser):
 
    def generate_password_reset_code(self):
        self.password_reset_code = ''.join(random.choices(string.digits, k=6))
-       self.password_reset_expires = timezone.now() + timezone.timedelta(minutes=10)
+       self.password_reset_expires = timezone.now() + timedelta(minutes=10)
        self.save(update_fields=['password_reset_code', 'password_reset_expires'])
 
    def is_password_reset_code_valid(self, code):
