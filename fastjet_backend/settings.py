@@ -85,12 +85,29 @@ TEMPLATES = [
 WSGI_APPLICATION = 'fastjet_backend.wsgi.application'
 
 # --------------------------------
-# Database (PythonAnywhere Cloud MySQL)
+# Database Configuration
 # --------------------------------
+# LOCAL DEVELOPMENT (XAMPP MySQL)
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.mysql',
+#         'NAME': 'fastjet_loyalty_system',
+#         'USER': 'root',
+#         'PASSWORD': '',
+#         'HOST': 'localhost',
+#         'PORT': '3306',
+#         'OPTIONS': {
+#             'charset': 'utf8mb4',
+#             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+#         },
+#     }
+# }
+
+# PRODUCTION (PythonAnywhere Cloud MySQL) - Uncomment for deployment
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'fastjet$fastjet',
+        'NAME': 'fastjet$fastdb',
         'USER': 'fastjet',
         'PASSWORD': 'jetjetv1',
         'HOST': 'fastjet.mysql.pythonanywhere-services.com',
