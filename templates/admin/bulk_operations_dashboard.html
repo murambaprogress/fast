@@ -1,0 +1,159 @@
+{% extends "admin/index.html" %}
+{% load static %}
+
+{% block title %}Bulk Flight Operations{% endblock %}
+
+{% block extrastyle %}
+    <style>
+        .bulk-ops-dashboard { margin: 20px 0; }
+        .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px; }
+        .stat-card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 20px; text-align: center; }
+        .stat-number { font-size: 28px; font-weight: bold; color: #0073aa; display: block; }
+        .stat-label { color: #666; margin-top: 5px; font-size: 14px; }
+        .quick-actions { margin: 30px 0; }
+        .action-buttons { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; }
+        .action-button { 
+            display: block; padding: 15px; background: #0073aa; color: white; 
+            text-decoration: none; border-radius: 5px; text-align: center; 
+            font-weight: bold; transition: background 0.2s;
+        }
+        .action-button:hover { background: #005a87; color: white; }
+        .recent-items { margin: 30px 0; }
+        .items-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; }
+        .items-list { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 15px; }
+        .items-list h3 { margin-top: 0; color: #333; border-bottom: 2px solid #0073aa; padding-bottom: 10px; }
+        .item { padding: 8px 0; border-bottom: 1px solid #eee; }
+        .item:last-child { border-bottom: none; }
+        .item-name { font-weight: bold; }
+        .item-details { font-size: 12px; color: #666; margin-top: 2px; }
+    </style>
+{% endblock %}
+
+{% block content %}
+<div class="bulk-ops-dashboard">
+    <h1>Bulk Flight Operations Dashboard</h1>
+    
+    <div class="stats-row">
+        <div class="stat-card">
+            <span class="stat-number">{{ routes_count }}</span>
+            <div class="stat-label">Total Routes</div>
+        </div>
+        <div class="stat-card">
+            <span class="stat-number">{{ flights_count }}</span>
+            <div class="stat-label">Total Flights</div>
+        </div>
+        <div class="stat-card">
+            <span class="stat-number">{{ schedules_count }}</span>
+            <div class="stat-label">Flight Schedules</div>
+        </div>
+        <div class="stat-card">
+            <span class="stat-number">{{ destinations_count }}</span>
+            <div class="stat-label">Destinations</div>
+        </div>
+    </div>
+    
+    <div class="quick-actions">
+        <h2>Quick Actions</h2>
+        <div class="action-buttons">
+            <a href="/admin/routes/route/bulk-operations/" class="action-button">
+                📅 Route Bulk Operations
+            </a>
+            <a href="/admin/booking/flight/add/" class="action-button">
+                ✈️ Create New Flight
+            </a>
+            <a href="/admin/routes/route/add/" class="action-button">
+                🛣️ Create New Route
+            </a>
+            <a href="/admin/destinations/destination/add/" class="action-button">
+                📍 Add Destination
+            </a>
+            <a href="/admin/booking/flightschedule/" class="action-button">
+                📋 Manage All Schedules
+            </a>
+            <a href="/admin/booking/booking/" class="action-button">
+                🎫 View Bookings
+            </a>
+        </div>
+    </div>
+    
+    <div class="recent-items">
+        <div class="items-grid">
+            <div class="items-list">
+                <h3>Recent Routes</h3>
+                {% for route in recent_routes %}
+                <div class="item">
+                    <div class="item-name">
+                        <a href="/admin/routes/route/{{ route.id }}/change/">
+                            {{ route.from_destination.code }} → {{ route.to_destination.code }}
+                        </a>
+                    </div>
+                    <div class="item-details">
+                        {{ route.from_destination.name }} → {{ route.to_destination.name }}<br>
+                        {{ route.price }} {{ route.currency }} | {{ route.distance }}km
+                        <br>
+                        <a href="/admin/routes/route/{{ route.id }}/bulk-schedules/" style="font-size: 11px;">Create Schedules</a> |
+                        <a href="/admin/routes/route/{{ route.id }}/create-roundtrip/" style="font-size: 11px;">Round Trip</a>
+                    </div>
+                </div>
+                {% empty %}
+                <div class="item">No routes yet. <a href="/admin/routes/route/add/">Create the first route</a>.</div>
+                {% endfor %}
+            </div>
+            
+            <div class="items-list">
+                <h3>Recent Flights</h3>
+                {% for flight in recent_flights %}
+                <div class="item">
+                    <div class="item-name">
+                        <a href="/admin/booking/flight/{{ flight.id }}/change/">
+                            {{ flight.flight_number }}
+                        </a>
+                    </div>
+                    <div class="item-details">
+                        {{ flight.route }}<br>
+                        {{ flight.aircraft_type }} | {{ flight.total_seats }} seats
+                        <br>
+                        <a href="/admin/booking/flight/{{ flight.id }}/bulk-schedules/" style="font-size: 11px;">Bulk Schedules</a> |
+                        <a href="/admin/booking/flightschedule/?flight__id__exact={{ flight.id }}" style="font-size: 11px;">View Schedules</a>
+                    </div>
+                </div>
+                {% empty %}
+                <div class="item">No flights yet. <a href="/admin/booking/flight/add/">Create the first flight</a>.</div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    
+    <div style="margin-top: 40px; padding: 20px; background: #f8f9fa; border-radius: 8px;">
+        <h3>Bulk Operations Guide</h3>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
+            <div>
+                <h4>🗓️ Monthly Schedule Creation</h4>
+                <p>Create flight schedules for an entire month with configurable operational days, pricing multipliers, and seat allocations.</p>
+                <ul style="font-size: 13px;">
+                    <li>Set date ranges (start/end dates)</li>
+                    <li>Configure operational days (Mon-Sun)</li>
+                    <li>Set departure times and duration</li>
+                    <li>Adjust pricing with multipliers</li>
+                </ul>
+            </div>
+            
+            <div>
+                <h4>🔄 Round Trip Management</h4>
+                <p>Perfect creation of round-trip routes with automatic return route generation and schedule coordination.</p>
+                <ul style="font-size: 13px;">
+                    <li>Auto-create return routes</li>
+                    <li>Coordinate pricing structure</li>
+                    <li>Sync operational schedules</li>
+                    <li>Manage capacity planning</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div style="margin-top: 15px; padding: 10px; background: #fff3cd; border-radius: 5px; font-size: 13px;">
+            <strong>💡 Pro Tip:</strong> Use the bulk operations to set up your entire monthly flight schedule in minutes. 
+            Start by creating routes, then use bulk schedule creation for each route with your desired operational patterns.
+        </div>
+    </div>
+</div>
+{% endblock %}

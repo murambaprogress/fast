@@ -1,0 +1,140 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block title %}Create Round Trip - {{ route }}{% endblock %}
+
+{% block extrastyle %}
+    <style>
+        .route-info { background: #e3f2fd; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+        .return-route-status { background: #f8f9fa; padding: 15px; margin: 15px 0; border-radius: 5px; }
+        .success { background: #d4edda; border-color: #c3e6cb; color: #155724; }
+        .info { background: #cce7ff; border-color: #9ecaed; color: #004085; }
+        .warning { background: #fff3cd; border-color: #ffeaa7; color: #856404; }
+    </style>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">Home</a>
+&rsaquo; <a href="{% url 'admin:routes_route_changelist' %}">Routes</a>
+&rsaquo; Create Round Trip - {{ route }}
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="route-info">
+    <h2>Original Route</h2>
+    <p><strong>From:</strong> {{ route.from_destination.name }} ({{ route.from_destination.code }})</p>
+    <p><strong>To:</strong> {{ route.to_destination.name }} ({{ route.to_destination.code }})</p>
+    <p><strong>Price:</strong> {{ route.price }} {{ route.currency }}</p>
+    <p><strong>Points Required:</strong> {{ route.point_threshold }}</p>
+    <p><strong>Duration:</strong> {{ route.estimated_time }}</p>
+    <p><strong>Distance:</strong> {{ route.distance }} km</p>
+</div>
+
+{% if return_route %}
+    <div class="return-route-status info">
+        <h3>✓ Return Route Already Exists</h3>
+        <p><strong>Route:</strong> {{ return_route.from_destination.name }} ({{ return_route.from_destination.code }}) → {{ return_route.to_destination.name }} ({{ return_route.to_destination.code }})</p>
+        <p><strong>Price:</strong> {{ return_route.price }} {{ return_route.currency }}</p>
+        <p><strong>Created:</strong> {{ return_route.created_at|date:"Y-m-d H:i" }}</p>
+        
+        <p style="margin-top: 15px;">
+            <a href="/admin/routes/route/{{ return_route.id }}/change/" class="button">Edit Return Route</a>
+            <a href="/admin/routes/route/{{ return_route.id }}/bulk-schedules/" class="button">Create Return Schedules</a>
+        </p>
+    </div>
+    
+    <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="existing_return_route" value="true">
+        
+        <fieldset class="module aligned">
+            <h3>Schedule Options</h3>
+            <div class="form-row">
+                <label>
+                    <input type="checkbox" name="create_schedules" checked>
+                    Create schedules for the return route immediately
+                </label>
+            </div>
+        </fieldset>
+        
+        <div class="submit-row">
+            <input type="submit" value="Proceed to Schedule Creation" class="default">
+            <a href="{% url 'admin:routes_route_changelist' %}" class="button cancel-link">Cancel</a>
+        </div>
+    </form>
+{% else %}
+    <div class="return-route-status warning">
+        <h3>Return Route Will Be Created</h3>
+        <p><strong>New Route:</strong> {{ route.to_destination.name }} ({{ route.to_destination.code }}) → {{ route.from_destination.name }} ({{ route.from_destination.code }})</p>
+        <p><strong>Pricing:</strong> Will inherit same pricing structure ({{ route.price }} {{ route.currency }})</p>
+        <p><strong>Settings:</strong> Will copy duration, distance, and point requirements</p>
+    </div>
+    
+    <form method="post">
+        {% csrf_token %}
+        
+        <fieldset class="module aligned">
+            <h3>Return Route Configuration</h3>
+            
+            <div class="form-row">
+                <div>
+                    <label for="return_price">Return Route Price:</label>
+                    <input type="number" id="return_price" name="return_price" value="{{ route.price }}" step="0.01" min="0">
+                    <span>{{ route.currency }}</span>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div>
+                    <label for="return_points">Return Route Points:</label>
+                    <input type="number" id="return_points" name="return_points" value="{{ route.point_threshold }}" min="0">
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div>
+                    <label for="return_duration">Return Route Duration:</label>
+                    <input type="text" id="return_duration" name="return_duration" value="{{ route.estimated_time }}">
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div>
+                    <label for="return_distance">Return Route Distance:</label>
+                    <input type="number" id="return_distance" name="return_distance" value="{{ route.distance }}" min="0">
+                    <span>km</span>
+                </div>
+            </div>
+        </fieldset>
+        
+        <fieldset class="module aligned">
+            <h3>Next Steps</h3>
+            <div class="form-row">
+                <label>
+                    <input type="checkbox" name="create_schedules" checked>
+                    Create bulk schedules for the return route immediately after creation
+                </label>
+                <p class="help">Check this to proceed directly to schedule creation for the new return route.</p>
+            </div>
+        </fieldset>
+        
+        <div class="submit-row">
+            <input type="submit" value="Create Return Route" class="default">
+            <a href="{% url 'admin:routes_route_changelist' %}" class="button cancel-link">Cancel</a>
+        </div>
+    </form>
+{% endif %}
+
+<div style="margin-top: 30px; padding: 15px; background: #f0f0f0; border-radius: 5px;">
+    <h4>Round Trip Benefits</h4>
+    <ul>
+        <li><strong>Complete Journey:</strong> Passengers can book full round-trip tickets</li>
+        <li><strong>Price Optimization:</strong> Flexible pricing for outbound vs return flights</li>
+        <li><strong>Schedule Coordination:</strong> Manage departure and return timing</li>
+        <li><strong>Inventory Management:</strong> Better capacity planning for both directions</li>
+        <li><strong>Customer Experience:</strong> Seamless booking experience for travelers</li>
+    </ul>
+</div>
+{% endblock %}

@@ -5,6 +5,7 @@ from decimal import Decimal
 from datetime import timedelta
 import random
 import string
+import json
 
 class UserManager(BaseUserManager):
    def create_user(self, phone_number, email, password=None, **extra_fields):
@@ -161,3 +162,189 @@ class EmailVerificationLog(models.Model):
    
    def __str__(self):
        return f"Verification for {self.user.email} at {self.created_at}"
+
+class PendingUser(models.Model):
+    """Store user registration data before email verification"""
+    USER_TYPE_CHOICES = [
+        ('individual', 'Individual'),
+        ('corporate', 'Corporate'),
+        ('student', 'Student'),
+        ('club', 'Club'),
+    ]
+    
+    INSTITUTION_CHOICES = [
+        ('Falcon', 'Falcon'),
+        ('St George', 'St George'),
+        ('Other', 'Other'),
+    ]
+    
+    CLUB_BANK_CHOICES = [
+        ('BANCABC', 'BANCABC'),
+        ('CBZ', 'CBZ'),
+    ]
+    
+    # Basic user fields
+    phone_number = models.CharField(max_length=20, unique=True)
+    email = models.EmailField(unique=True)
+    first_name = models.CharField(max_length=30)
+    last_name = models.CharField(max_length=30)
+    password_hash = models.CharField(max_length=255)
+    user_type = models.CharField(max_length=20, choices=USER_TYPE_CHOICES, default='individual')
+    
+    # Verification fields
+    email_verification_code = models.CharField(max_length=6)
+    verification_code_expires = models.DateTimeField()
+    verification_attempts = models.IntegerField(default=0)
+    last_verification_attempt = models.DateTimeField(blank=True, null=True)
+    
+    # Corporate fields
+    company_name = models.CharField(max_length=200, blank=True, null=True)
+    company_address = models.TextField(blank=True, null=True)
+    company_registration_number = models.CharField(max_length=100, blank=True, null=True)
+    tin_tax_number = models.CharField(max_length=100, blank=True, null=True)
+    vat_certificate = models.FileField(upload_to='documents/pending/vat_certificates/', blank=True, null=True)
+    corporate_tax_document = models.FileField(upload_to='documents/pending/corporate_tax/', blank=True, null=True)
+    certificate_of_incorporation = models.FileField(upload_to='documents/pending/incorporation/', blank=True, null=True)
+    
+    # Student fields
+    age = models.PositiveIntegerField(blank=True, null=True)
+    institution = models.CharField(max_length=50, choices=INSTITUTION_CHOICES, blank=True, null=True)
+    custom_institution = models.CharField(max_length=200, blank=True, null=True)
+    student_id = models.CharField(max_length=100, blank=True, null=True)
+    birth_certificate = models.FileField(upload_to='documents/pending/birth_certificates/', blank=True, null=True)
+    
+    # Club fields
+    club_name = models.CharField(max_length=200, blank=True, null=True)
+    number_of_members = models.PositiveIntegerField(blank=True, null=True)
+    club_card_bank = models.CharField(max_length=20, choices=CLUB_BANK_CHOICES, blank=True, null=True)
+    account_number = models.CharField(max_length=50, blank=True, null=True)
+    
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    ip_address = models.GenericIPAddressField(blank=True, null=True)
+    user_agent = models.TextField(blank=True, null=True)
+    
+    class Meta:
+        indexes = [
+            models.Index(fields=['email']),
+            models.Index(fields=['phone_number']),
+            models.Index(fields=['email_verification_code']),
+        ]
+    
+    def __str__(self):
+        return f"Pending: {self.first_name} {self.last_name} ({self.email})"
+    
+    def is_verification_code_valid(self, code):
+        """Check if the provided verification code is valid and not expired"""
+        if not self.email_verification_code or not self.verification_code_expires:
+            return False
+        return (self.email_verification_code == str(code).zfill(6) and 
+                self.verification_code_expires > timezone.now())
+    
+    def can_request_new_code(self):
+        """Check if user can request a new verification code (2-minute cooldown)"""
+        if not self.last_verification_attempt:
+            return True
+        time_since_last = timezone.now() - self.last_verification_attempt
+        return time_since_last >= timedelta(minutes=2)
+    
+    def generate_verification_code(self):
+        """Generate a new 6-digit verification code"""
+        self.email_verification_code = ''.join(random.choices(string.digits, k=6))
+        self.verification_code_expires = timezone.now() + timedelta(minutes=10)
+        self.last_verification_attempt = timezone.now()
+        self.save(update_fields=['email_verification_code', 'verification_code_expires', 'last_verification_attempt'])
+    
+    def create_actual_user(self):
+        """Create the actual User instance after email verification"""
+        from django.contrib.auth.hashers import make_password
+        
+        # Set approval status based on user type
+        is_approved = self.user_type == 'individual'  # Only individual users are auto-approved
+        
+        user_data = {
+            'phone_number': self.phone_number,
+            'email': self.email,
+            'first_name': self.first_name,
+            'last_name': self.last_name,
+            'user_type': self.user_type,
+            'email_verified': True,
+            'is_approved': is_approved,
+            'company_name': self.company_name,
+            'company_address': self.company_address,
+            'company_registration_number': self.company_registration_number,
+            'tin_tax_number': self.tin_tax_number,
+            'vat_certificate': self.vat_certificate,
+            'corporate_tax_document': self.corporate_tax_document,
+            'certificate_of_incorporation': self.certificate_of_incorporation,
+            'age': self.age,
+            'institution': self.institution,
+            'custom_institution': self.custom_institution,
+            'student_id': self.student_id,
+            'birth_certificate': self.birth_certificate,
+            'club_name': self.club_name,
+            'number_of_members': self.number_of_members,
+            'club_card_bank': self.club_card_bank,
+            'account_number': self.account_number,
+        }
+        
+        user = User(**user_data)
+        user.password = self.password_hash  # Use the stored password hash
+        user.save()
+        
+        # Create wallet and loyalty account
+        from wallets.models import Wallet
+        Wallet.objects.create(user=user)
+        
+        try:
+            from loyalty.models import LoyaltyAccount
+            loyalty_account, created = LoyaltyAccount.objects.get_or_create(user=user)
+            if created:
+                loyalty_account.add_points(50, "Welcome bonus - 50 points for new account registration")
+        except ImportError:
+            pass
+        
+        # Delete this pending user record
+        self.delete()
+        
+        return user
+
+class AdminOTP(models.Model):
+    """Store admin OTP codes in database for persistence across server restarts"""
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='admin_otp')
+    otp_code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveIntegerField(default=0)
+    
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'expires_at']),
+        ]
+    
+    def is_valid(self, code):
+        """Check if the provided code is valid and not expired"""
+        if self.attempts >= 3:
+            return False
+        if timezone.now() > self.expires_at:
+            return False
+        return self.otp_code == str(code).strip().zfill(6)
+    
+    def increment_attempts(self):
+        """Increment failed attempt counter"""
+        self.attempts += 1
+        self.save(update_fields=['attempts'])
+    
+    def is_expired(self):
+        """Check if OTP is expired"""
+        return timezone.now() > self.expires_at
+    
+    @classmethod
+    def cleanup_expired(cls):
+        """Remove expired OTP records"""
+        expired_count = cls.objects.filter(expires_at__lt=timezone.now()).count()
+        cls.objects.filter(expires_at__lt=timezone.now()).delete()
+        return expired_count
+    
+    def __str__(self):
+        return f"AdminOTP for {self.user.email} - expires {self.expires_at}"

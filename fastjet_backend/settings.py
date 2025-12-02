@@ -85,15 +85,15 @@ TEMPLATES = [
 WSGI_APPLICATION = 'fastjet_backend.wsgi.application'
 
 # --------------------------------
-# Database (XAMPP MySQL)
+# Database (PythonAnywhere Cloud MySQL)
 # --------------------------------
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'fastjet_loyalty_system',  # Use your actual database name
-        'USER': 'root',
-        'PASSWORD': '',  # No password for XAMPP default
-        'HOST': 'localhost',
+        'NAME': 'fastjet$fastjet',
+        'USER': 'fastjet',
+        'PASSWORD': 'jetjetv1',
+        'HOST': 'fastjet.mysql.pythonanywhere-services.com',
         'PORT': '3306',
         'OPTIONS': {
             'charset': 'utf8mb4',
@@ -137,11 +137,11 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'  # map in PA: URL=/static/ → /home/fast
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'         # map in PA: URL=/media/  → /home/fastjet/fastjet_backend/media
 
-# Source static directories with priority: project static/ first, then dist/
+# Source static directories with priority: project static/ first, then frontend_build/
 PROJECT_STATIC = BASE_DIR / 'static'
-# FRONTEND_DIST should point to the built frontend `dist` in the monorepo root
-# Use parent.parent to reach the workspace root where `fastjet-sky-rewards-hub/dist` lives.
-FRONTEND_DIST = BASE_DIR.parent.parent / 'fastjet-sky-rewards-hub' / 'dist'
+# FRONTEND_DIST points to the built frontend within the backend directory
+# This makes deployment to PythonAnywhere simpler - just push the backend folder
+FRONTEND_DIST = BASE_DIR / 'frontend_build'
 
 STATICFILES_DIRS = [
     p for p in [
@@ -168,7 +168,7 @@ EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_HOST_USER = 'murambaprogress@gmail.com'
-EMAIL_HOST_PASSWORD = 'ghnd xylw gfcg sdwd'  # You'll need to generate an app password in your Google account
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', 'khzy taxx znkb jneb')  # You'll need to generate an app password in your Google account
 DEFAULT_FROM_EMAIL = 'FastJet Loyalty <murambaprogress@gmail.com>'
 
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "ACc574e043f52d83ceefd946699e9a7c45")

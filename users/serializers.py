@@ -3,9 +3,13 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db.models import Q
+from django.contrib.auth.hashers import make_password
+from django.utils import timezone
+from datetime import timedelta
 import re
 
 User = get_user_model()
+from .models import PendingUser
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
    password = serializers.CharField(write_only=True, min_length=8)
@@ -34,7 +38,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
    account_number = serializers.CharField(required=False, allow_blank=True)
    
    class Meta:
-       model = User
+       model = PendingUser
        fields = [
            'first_name', 'last_name', 'email', 'phone_number', 'password', 'confirm_password',
            'user_type', 'company_name', 'company_address', 'company_registration_number',
@@ -47,13 +51,19 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
        }
    
    def validate_email(self, value):
+       # Check if email exists in actual users or pending users
        if User.objects.filter(email__iexact=value).exists():
            raise serializers.ValidationError("A user with this email already exists.")
+       if PendingUser.objects.filter(email__iexact=value).exists():
+           raise serializers.ValidationError("A user with this email is already pending verification.")
        return value
    
    def validate_phone_number(self, value):
+       # Check if phone number exists in actual users or pending users
        if User.objects.filter(phone_number=value).exists():
            raise serializers.ValidationError("A user with this phone number already exists.")
+       if PendingUser.objects.filter(phone_number=value).exists():
+           raise serializers.ValidationError("A user with this phone number is already pending verification.")
        
        # Zimbabwe phone number validation patterns
        zim_patterns = [
@@ -129,8 +139,16 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
        validated_data.pop('confirm_password')
        password = validated_data.pop('password')
        
-       user = User.objects.create_user(password=password, **validated_data)
-       return user
+       # Hash the password
+       validated_data['password_hash'] = make_password(password)
+       
+       # Generate verification code
+       from users.views import generate_otp
+       validated_data['email_verification_code'] = generate_otp()
+       validated_data['verification_code_expires'] = timezone.now() + timedelta(minutes=10)
+       
+       pending_user = PendingUser.objects.create(**validated_data)
+       return pending_user
 
 class UserSerializer(serializers.ModelSerializer):
    full_name = serializers.CharField(source='get_full_name', read_only=True)
@@ -171,6 +189,24 @@ class EmailVerificationSerializer(serializers.Serializer):
        email = attrs['email']
        verification_code = attrs['verification_code']
        
+       # First check if this is a pending user
+       try:
+           pending_user = PendingUser.objects.get(email__iexact=email)
+           if not pending_user.is_verification_code_valid(verification_code):
+               pending_user.verification_attempts += 1
+               pending_user.save(update_fields=['verification_attempts'])
+               raise serializers.ValidationError("Invalid or expired verification code.")
+           
+           # Create the actual user
+           user = pending_user.create_actual_user()
+           attrs['user'] = user
+           attrs['is_new_user'] = True
+           return attrs
+           
+       except PendingUser.DoesNotExist:
+           pass
+       
+       # Check existing users (legacy support)
        try:
            user = User.objects.get(email__iexact=email)
        except User.DoesNotExist:
@@ -195,12 +231,24 @@ class EmailVerificationSerializer(serializers.Serializer):
        user.save()
        
        attrs['user'] = user
+       attrs['is_new_user'] = False
        return attrs
 
 class ResendVerificationSerializer(serializers.Serializer):
    email = serializers.EmailField()
    
    def validate_email(self, value):
+       # First check pending users
+       try:
+           pending_user = PendingUser.objects.get(email__iexact=value)
+           if not pending_user.can_request_new_code():
+               raise serializers.ValidationError("Please wait before requesting a new verification code.")
+           self.pending_user = pending_user
+           return value
+       except PendingUser.DoesNotExist:
+           pass
+       
+       # Check existing users (legacy support)
        try:
            user = User.objects.get(email__iexact=value)
        except User.DoesNotExist:
@@ -216,7 +264,10 @@ class ResendVerificationSerializer(serializers.Serializer):
        return value
    
    def validate(self, attrs):
-       attrs['user'] = self.user
+       if hasattr(self, 'pending_user'):
+           attrs['pending_user'] = self.pending_user
+       elif hasattr(self, 'user'):
+           attrs['user'] = self.user
        return attrs
 
 # New Serializers for Password Reset

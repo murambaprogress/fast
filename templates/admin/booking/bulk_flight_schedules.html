@@ -1,0 +1,173 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block title %}Bulk Schedule Creation - {{ flight.flight_number }}{% endblock %}
+
+{% block extrastyle %}
+    <style>
+        .form-row { margin-bottom: 15px; }
+        .form-group { display: inline-block; margin-right: 20px; vertical-align: top; }
+        .help-text { color: #666; font-size: 12px; }
+        .operational-days { display: flex; flex-wrap: wrap; gap: 10px; }
+        .operational-days label { display: flex; align-items: center; gap: 5px; }
+        .schedule-preview { background: #f8f9fa; padding: 15px; margin: 15px 0; border-radius: 5px; }
+        .flight-info { background: #e3f2fd; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+    </style>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">Home</a>
+&rsaquo; <a href="{% url 'admin:booking_flight_changelist' %}">Flights</a>
+&rsaquo; Bulk Schedule Creation - {{ flight.flight_number }}
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="flight-info">
+    <h2>Flight Information</h2>
+    <p><strong>Flight Number:</strong> {{ flight.flight_number }}</p>
+    <p><strong>Route:</strong> {{ flight.route.from_destination.name }} ({{ flight.route.from_destination.code }}) → {{ flight.route.to_destination.name }} ({{ flight.route.to_destination.code }})</p>
+    <p><strong>Aircraft:</strong> {{ flight.aircraft_type }} ({{ flight.aircraft_registration }})</p>
+    <p><strong>Capacity:</strong> {{ flight.total_seats }} seats</p>
+    <p><strong>Duration:</strong> {{ flight.flight_duration }}</p>
+    <p><strong>Operational Days:</strong> {{ flight.get_operational_days_display }}</p>
+</div>
+
+<form method="post" id="bulk-schedule-form">
+    {% csrf_token %}
+    
+    <h2>Schedule Parameters</h2>
+    
+    <fieldset class="module aligned">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="start_date">Start Date:</label>
+                <input type="date" id="start_date" name="start_date" required>
+            </div>
+            <div class="form-group">
+                <label for="end_date">End Date:</label>
+                <input type="date" id="end_date" name="end_date" required>
+            </div>
+        </div>
+        
+        <div class="form-row">
+            <div class="form-group">
+                <label for="departure_time">Departure Time:</label>
+                <input type="time" id="departure_time" name="departure_time" required>
+            </div>
+            <div class="form-group">
+                <label for="total_seats">Total Seats:</label>
+                <input type="number" id="total_seats" name="total_seats" value="{{ flight.total_seats }}" min="1">
+            </div>
+            <div class="form-group">
+                <label for="price_multiplier">Price Multiplier:</label>
+                <input type="number" id="price_multiplier" name="price_multiplier" value="1.00" step="0.01" min="0.5" max="3.0">
+                <p class="help-text">Base price: {{ flight.route.price }} {{ flight.route.currency }}</p>
+            </div>
+        </div>
+    </fieldset>
+    
+    <fieldset class="module aligned">
+        <h3>Operational Days Override</h3>
+        <p class="help-text">Leave unchecked to use flight's default operational days, or select specific days to override.</p>
+        <div class="operational-days">
+            <label><input type="checkbox" name="operational_days" value="0"> Monday</label>
+            <label><input type="checkbox" name="operational_days" value="1"> Tuesday</label>
+            <label><input type="checkbox" name="operational_days" value="2"> Wednesday</label>
+            <label><input type="checkbox" name="operational_days" value="3"> Thursday</label>
+            <label><input type="checkbox" name="operational_days" value="4"> Friday</label>
+            <label><input type="checkbox" name="operational_days" value="5"> Saturday</label>
+            <label><input type="checkbox" name="operational_days" value="6"> Sunday</label>
+        </div>
+    </fieldset>
+    
+    <div class="schedule-preview" id="preview" style="display: none;">
+        <h3>Preview</h3>
+        <p id="preview-text"></p>
+    </div>
+    
+    <div class="submit-row">
+        <input type="submit" value="Create Schedules" class="default">
+        <a href="{% url 'admin:booking_flight_changelist' %}" class="button cancel-link">Cancel</a>
+    </div>
+</form>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('bulk-schedule-form');
+    const preview = document.getElementById('preview');
+    const previewText = document.getElementById('preview-text');
+    
+    // Flight's operational days from backend
+    const flightOperationalDays = {{ flight.operational_days|default:"[]"|safe }};
+    
+    function updatePreview() {
+        const startDate = document.getElementById('start_date').value;
+        const endDate = document.getElementById('end_date').value;
+        const departureTime = document.getElementById('departure_time').value;
+        const operationalDays = Array.from(document.querySelectorAll('input[name="operational_days"]:checked')).map(cb => cb.value);
+        const priceMultiplier = parseFloat(document.getElementById('price_multiplier').value || 1);
+        
+        if (startDate && endDate && departureTime) {
+            const start = new Date(startDate);
+            const end = new Date(endDate);
+            const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+            
+            // Use override days if selected, otherwise use flight's operational days
+            const activeDays = operationalDays.length > 0 ? operationalDays : flightOperationalDays.map(d => d.toString());
+            
+            let scheduleCount = 0;
+            let currentDate = new Date(start);
+            
+            while (currentDate <= end) {
+                const weekday = currentDate.getDay() === 0 ? 6 : currentDate.getDay() - 1; // Convert Sunday=0 to Sunday=6
+                
+                if (activeDays.length === 0 || activeDays.includes(weekday.toString())) {
+                    scheduleCount++;
+                }
+                currentDate.setDate(currentDate.getDate() + 1);
+            }
+            
+            const basePrice = {{ flight.route.price|floatformat:2 }};
+            const finalPrice = (basePrice * priceMultiplier).toFixed(2);
+            
+            const opDaysText = activeDays.length === 0 ? 'All days' : activeDays.map(d => dayNames[d]).join(', ');
+            const daysSource = operationalDays.length > 0 ? 'Override' : 'Flight Default';
+            
+            previewText.innerHTML = `
+                <strong>Schedules to create:</strong> ${scheduleCount}<br>
+                <strong>Date range:</strong> ${startDate} to ${endDate}<br>
+                <strong>Departure time:</strong> ${departureTime}<br>
+                <strong>Operational days:</strong> ${opDaysText} (${daysSource})<br>
+                <strong>Price per ticket:</strong> ${finalPrice} {{ flight.route.currency }}<br>
+                <strong>Total seats per schedule:</strong> ${document.getElementById('total_seats').value}
+            `;
+            preview.style.display = 'block';
+        } else {
+            preview.style.display = 'none';
+        }
+    }
+    
+    // Add event listeners for real-time preview
+    const inputs = ['start_date', 'end_date', 'departure_time', 'price_multiplier', 'total_seats'];
+    inputs.forEach(id => {
+        document.getElementById(id).addEventListener('change', updatePreview);
+    });
+    
+    document.querySelectorAll('input[name="operational_days"]').forEach(cb => {
+        cb.addEventListener('change', updatePreview);
+    });
+    
+    // Set default start date to today
+    document.getElementById('start_date').value = new Date().toISOString().split('T')[0];
+    
+    // Set default end date to one month from today
+    const nextMonth = new Date();
+    nextMonth.setMonth(nextMonth.getMonth() + 1);
+    document.getElementById('end_date').value = nextMonth.toISOString().split('T')[0];
+    
+    updatePreview();
+});
+</script>
+{% endblock %}
