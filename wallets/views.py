@@ -553,6 +553,7 @@ def bancabc_payment_success(request):
         currency = request.data.get('currency', 'ZAR').upper()
         reference = request.data.get('reference', '').strip()[:255]  # Limit length
         bancabc_transaction_id = request.data.get('bancabc_transaction_id', '').strip()[:255]
+        bancabc_reference = request.data.get('bancabc_reference', '').strip()[:255]  # BancABC payment reference
         payment_method = request.data.get('payment_method', 'BANCABC').strip()[:50]
 
         # Comprehensive input validation
@@ -586,9 +587,9 @@ def bancabc_payment_success(request):
             except (ValueError, TypeError, InvalidOperation):
                 validation_errors.append('amount must be a valid decimal number')
 
-        # Validate currency
-        if currency not in ['ZAR', 'USD', 'EUR', 'GBP']:  # Add supported currencies
-            validation_errors.append('currency must be one of: ZAR, USD, EUR, GBP')
+        # Validate currency (USD only)
+        if currency != 'USD':
+            validation_errors.append('currency must be USD')
 
         # Validate transaction_id format (alphanumeric, hyphens, underscores only)
         if transaction_id and not re.match(r'^[a-zA-Z0-9_-]+$', transaction_id):
@@ -653,6 +654,23 @@ def bancabc_payment_success(request):
                 'message': 'Transaction already processed',
                 'transaction_id': transaction_id
             }, status=status.HTTP_200_OK)
+
+        # SECURITY CHECK: Verify payment was successful before crediting wallet
+        # Check if BancABC has notified us about successful payment
+        payment_verification = ProcessedTransaction.objects.filter(
+            bancabc_transaction_id=bancabc_reference,
+            status='payment_verified'
+        ).first()
+
+        if not payment_verification:
+            # Payment not verified - reject credit push
+            logger.error(f"BancABC credit push rejected - payment not verified: {bancabc_reference}")
+            return Response({
+                'status': 'error',
+                'message': 'Payment not verified. Please call Payment Notification API first to report successful payment.',
+                'bancabc_reference': bancabc_reference,
+                'required_action': 'Call POST /api/wallets/bancabc/payment/notify/ with payment_status=SUCCESS first'
+            }, status=status.HTTP_403_FORBIDDEN)
 
         # Create processed transaction record
         processed_txn, created = ProcessedTransaction.objects.get_or_create(
@@ -990,6 +1008,1161 @@ def bancabc_payment_status(request, transaction_id):
         return Response({
             'status': 'error',
             'message': 'Internal server error checking payment status'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ================================
+# BancABC Wallet Validation & Credit Push APIs
+# ================================
+
+@api_view(['POST'])
+@authentication_classes([BancABCAuthentication])
+@permission_classes([AllowAny])
+@bancabc_rate_limit(max_calls=30, time_window=60)  # 30 calls per minute for validation
+def bancabc_wallet_validation(request):
+    """
+    Wallet Validation/Lookup API for BancABC
+    
+    Allows BancABC to look up and validate Fastjet customer accounts from their system.
+    BancABC can search by phone number, email, or customer ID to verify if a customer
+    has a Fastjet account before initiating a wallet funding transaction.
+    
+    Request Body:
+    {
+        "phone_number": "263771234567",     // Optional - Primary lookup method
+        "email": "customer@email.com",      // Optional - Alternative lookup
+        "customer_id": "12345",             // Optional - If BancABC has stored it
+        "national_id": "63-123456-A-12",    // Optional - Future use
+        "account_number": "BANCABC-ACC-123" // Optional - BancABC's reference
+    }
+    
+    At least one identifier is required (phone_number, email, or customer_id).
+    
+    Response (Customer Found):
+    {
+        "status": "success",
+        "customer_found": true,
+        "customer_details": {
+            "customer_id": 12345,
+            "phone_number": "263771234567",
+            "email": "customer@email.com",
+            "first_name": "John",
+            "last_name": "Doe",
+            "full_name": "John Doe",
+            "user_type": "individual",
+            "company_name": null,
+            "wallet_exists": true,
+            "wallet_active": true,
+            "account_status": "active",
+            "is_verified": true,
+            "is_approved": true,
+            "can_receive_funds": true,
+            "registered_date": "2024-01-15T10:30:00Z",
+            "currencies": ["USD", "ZAR"],
+            "balances": {
+                "USD": "150.00",
+                "ZAR": "2500.00"
+            },
+            "total_transactions": 45,
+            "last_transaction_date": "2025-12-01T15:20:00Z"
+        },
+        "validation_timestamp": "2025-12-04T10:30:00Z",
+        "bancabc_reference": "BANCABC-ACC-123"
+    }
+    
+    Response (Customer Not Found):
+    {
+        "status": "success",
+        "customer_found": false,
+        "message": "No Fastjet account found for the provided details",
+        "searched_by": "phone_number",
+        "validation_timestamp": "2025-12-04T10:30:00Z"
+    }
+    """
+    try:
+        # Extract all possible lookup parameters
+        phone_number = request.data.get('phone_number', '').strip()
+        email = request.data.get('email', '').strip()
+        customer_id = request.data.get('customer_id')
+        national_id = request.data.get('national_id', '').strip()
+        account_number = request.data.get('account_number', '').strip()
+
+        # Validate input - at least one identifier required
+        if not phone_number and not email and not customer_id and not national_id:
+            return Response({
+                'status': 'error',
+                'message': 'At least one identifier is required: phone_number, email, customer_id, or national_id'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Try to find user by various methods (in priority order)
+        user = None
+        search_method = None
+        
+        # Method 1: Search by customer ID (most specific)
+        if customer_id and not user:
+            try:
+                user = User.objects.filter(id=int(customer_id)).first()
+                if user:
+                    search_method = 'customer_id'
+            except (ValueError, TypeError):
+                pass
+        
+        # Method 2: Search by phone number (most common)
+        if phone_number and not user:
+            # Normalize phone number (remove spaces, dashes, parentheses, etc.)
+            normalized_phone = re.sub(r'[^0-9+]', '', phone_number)
+            
+            # Try exact match first
+            user = User.objects.filter(phone_number=normalized_phone).first()
+            
+            # Try variations if exact match fails
+            if not user and normalized_phone.startswith('263'):
+                # Try with +263
+                user = User.objects.filter(phone_number=f'+{normalized_phone}').first()
+            elif not user and normalized_phone.startswith('+263'):
+                # Try without +
+                user = User.objects.filter(phone_number=normalized_phone[1:]).first()
+            elif not user and normalized_phone.startswith('0'):
+                # Try replacing leading 0 with 263
+                user = User.objects.filter(phone_number=f'263{normalized_phone[1:]}').first()
+            
+            if user:
+                search_method = 'phone_number'
+        
+        # Method 3: Search by email
+        if email and not user:
+            user = User.objects.filter(email__iexact=email).first()
+            if user:
+                search_method = 'email'
+        
+        # Method 4: Search by national ID (if implemented in future)
+        # This is a placeholder for future enhancement
+        if national_id and not user:
+            # user = User.objects.filter(national_id=national_id).first()
+            # if user:
+            #     search_method = 'national_id'
+            pass
+
+        # If user not found after all attempts
+        if not user:
+            logger.info(f"BancABC lookup: Customer not found - Phone: {phone_number}, Email: {email}, ID: {customer_id}")
+            return Response({
+                'status': 'success',
+                'customer_found': False,
+                'message': 'No Fastjet account found for the provided details',
+                'searched_by': 'phone_number' if phone_number else 'email' if email else 'customer_id',
+                'validation_timestamp': timezone.now().isoformat()
+            }, status=status.HTTP_200_OK)
+
+        # Get wallet information
+        wallet = None
+        wallet_balances = {}
+        currencies = []
+        wallet_active = False
+        total_transactions = 0
+        last_transaction_date = None
+        
+        if hasattr(user, 'wallet'):
+            wallet = user.wallet
+            wallet_active = True
+            
+            # Get balances
+            balances = WalletBalance.objects.filter(wallet=wallet)
+            for balance in balances:
+                currencies.append(balance.currency.code)
+                wallet_balances[balance.currency.code] = str(balance.balance)
+            
+            # Get transaction stats
+            transactions = WalletTransaction.objects.filter(wallet=wallet)
+            total_transactions = transactions.count()
+            
+            latest_txn = transactions.order_by('-created_at').first()
+            if latest_txn:
+                last_transaction_date = latest_txn.created_at.isoformat()
+
+        # Determine if customer can receive funds
+        can_receive_funds = (
+            user.is_active and 
+            user.is_approved and 
+            wallet is not None
+        )
+
+        # Build comprehensive customer details response
+        customer_details = {
+            'customer_id': user.id,
+            'phone_number': user.phone_number,
+            'email': user.email,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'full_name': user.get_full_name(),
+            'user_type': user.user_type,
+            'company_name': user.company_name if user.user_type == 'corporate' else None,
+            'wallet_exists': wallet is not None,
+            'wallet_active': wallet_active,
+            'account_status': 'active' if user.is_active else 'inactive',
+            'is_verified': user.email_verified,
+            'is_approved': user.is_approved,
+            'can_receive_funds': can_receive_funds,
+            'registered_date': user.date_joined.isoformat() if hasattr(user, 'date_joined') else None,
+            'currencies': currencies,
+            'balances': wallet_balances,
+            'total_transactions': total_transactions,
+            'last_transaction_date': last_transaction_date
+        }
+
+        # Log successful validation
+        logger.info(f"BancABC lookup success: User {user.id} ({user.phone_number}) found via {search_method}")
+
+        return Response({
+            'status': 'success',
+            'customer_found': True,
+            'search_method': search_method,
+            'customer_details': customer_details,
+            'validation_timestamp': timezone.now().isoformat(),
+            'bancabc_reference': account_number if account_number else None
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"BancABC wallet validation error: {str(e)}", exc_info=True)
+        return Response({
+            'status': 'error',
+            'message': 'Internal server error during validation'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([BancABCAuthentication])
+@permission_classes([AllowAny])
+@bancabc_rate_limit(max_calls=20, time_window=60)  # 20 calls per minute for credit push
+def bancabc_credit_push(request):
+    """
+    Credit Push API for BancABC
+    
+    Credits customer wallet directly from BancABC channels (branches, kiosks, digital, agents).
+    This endpoint receives payment information from BancABC and credits the customer's wallet.
+    
+    Request Body:
+    {
+        "transaction_id": "BANCABC-TXN-123456",     // Required - Unique transaction ID
+        "bancabc_reference": "REF-789012",          // Required - BancABC internal reference
+        "customer_id": 12345,                        // Optional (phone or customer_id required)
+        "phone_number": "263771234567",              // Optional (phone or customer_id required)
+        "amount": 100.00,                            // Required - Amount to credit
+        "currency": "USD",                           // Required - Currency code
+        "channel": "branch",                         // Required - branch/kiosk/digital/agent
+        "operator_id": "OP123",                      // Optional - Operator who processed
+        "branch_code": "HRE001",                     // Optional - Branch/location code
+        "remarks": "Wallet funding via BancABC",     // Optional - Transaction remarks
+        "customer_account": "ACC123456"              // Optional - Customer's BancABC account
+    }
+    
+    Response:
+    {
+        "status": "success",
+        "message": "Wallet credited successfully with 100.00 USD",
+        "transaction_id": "BANCABC-TXN-123456",
+        "fastjet_transaction_id": "FJ-INT-789ABC",
+        "customer_id": 12345,
+        "amount": "100.00",
+        "currency": "USD",
+        "new_balance": "250.00",
+        "points_earned": 10,
+        "processed_at": "2025-12-04T10:30:00Z",
+        "bancabc_reference": "REF-789012"
+    }
+    """
+    try:
+        # Extract transaction data
+        transaction_id = request.data.get('transaction_id', '').strip()
+        bancabc_reference = request.data.get('bancabc_reference', '').strip()
+        customer_id = request.data.get('customer_id')
+        phone_number = request.data.get('phone_number', '').strip()
+        amount = request.data.get('amount')
+        currency = request.data.get('currency', 'USD').upper()
+        channel = request.data.get('channel', 'unknown').lower()
+        operator_id = request.data.get('operator_id', '').strip()
+        branch_code = request.data.get('branch_code', '').strip()
+        remarks = request.data.get('remarks', 'Wallet funding via BancABC').strip()[:255]
+        customer_account = request.data.get('customer_account', '').strip()
+
+        # Comprehensive validation
+        validation_errors = []
+
+        # Validate required fields
+        if not transaction_id:
+            validation_errors.append('transaction_id is required')
+        if not bancabc_reference:
+            validation_errors.append('bancabc_reference is required')
+        if not phone_number and not customer_id:
+            validation_errors.append('Either phone_number or customer_id is required')
+        if amount is None:
+            validation_errors.append('amount is required')
+        if not currency:
+            validation_errors.append('currency is required')
+        if not channel:
+            validation_errors.append('channel is required')
+
+        # Validate amount
+        if amount is not None:
+            try:
+                amount_decimal = Decimal(str(amount))
+                if amount_decimal <= 0:
+                    validation_errors.append('amount must be greater than zero')
+                if amount_decimal > Decimal('1000000'):
+                    validation_errors.append('amount exceeds maximum allowed value')
+            except (ValueError, TypeError, InvalidOperation):
+                validation_errors.append('amount must be a valid decimal number')
+
+        # Validate currency
+        if currency and currency not in ['USD', 'ZAR', 'ZWG', 'EUR', 'GBP']:
+            validation_errors.append(f'currency must be one of: USD, ZAR, ZWG, EUR, GBP')
+
+        # Validate channel
+        valid_channels = ['branch', 'kiosk', 'digital', 'agent', 'atm', 'online', 'mobile']
+        if channel and channel not in valid_channels:
+            validation_errors.append(f'channel must be one of: {", ".join(valid_channels)}')
+
+        if validation_errors:
+            logger.warning(f"BancABC credit push validation failed: {', '.join(validation_errors)}")
+            return Response({
+                'status': 'error',
+                'message': 'Validation failed',
+                'errors': validation_errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Find user
+        user = None
+        if phone_number:
+            normalized_phone = re.sub(r'[^0-9+]', '', phone_number)
+            user = User.objects.filter(phone_number=normalized_phone).first()
+        elif customer_id:
+            try:
+                user = User.objects.filter(id=int(customer_id)).first()
+            except (ValueError, TypeError):
+                return Response({
+                    'status': 'error',
+                    'message': 'Invalid customer_id format'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user:
+            logger.error(f"BancABC credit push failed: User not found - Phone: {phone_number}, ID: {customer_id}")
+            return Response({
+                'status': 'error',
+                'message': 'Customer not found in our system'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        # Idempotency check
+        idempotency_key = request.META.get('HTTP_IDEMPOTENCY_KEY') or f"bancabc-credit-{transaction_id}"
+        
+        existing_txn = ProcessedTransaction.objects.filter(
+            idempotency_key=idempotency_key,
+            status='completed'
+        ).first()
+
+        if existing_txn:
+            # Return cached response
+            logger.info(f"BancABC credit push - duplicate transaction: {transaction_id}")
+            return Response(existing_txn.response_data or {
+                'status': 'success',
+                'message': 'Transaction already processed',
+                'transaction_id': transaction_id
+            }, status=status.HTTP_200_OK)
+
+        # Get currency object
+        currency_obj = get_object_or_404(Currency, code=currency.upper())
+
+        # Get or create wallet
+        wallet, _ = Wallet.objects.get_or_create(user=user)
+        wallet_balance, _ = WalletBalance.objects.get_or_create(wallet=wallet, currency=currency_obj)
+
+        # Convert amount to Decimal
+        amount_decimal = Decimal(str(amount))
+
+        # Generate internal Fastjet transaction ID
+        import uuid
+        internal_txn_id = f"FJ-BANCABC-{uuid.uuid4().hex[:12].upper()}"
+
+        # Create processed transaction record
+        processed_txn = ProcessedTransaction.objects.create(
+            idempotency_key=idempotency_key,
+            transaction_id=internal_txn_id,
+            user=user,
+            amount=amount_decimal,
+            currency=currency_obj,
+            status='processing',
+            bancabc_transaction_id=bancabc_reference,
+            response_data={
+                'bancabc_transaction_id': transaction_id,
+                'bancabc_reference': bancabc_reference,
+                'channel': channel,
+                'operator_id': operator_id,
+                'branch_code': branch_code,
+                'customer_account': customer_account
+            }
+        )
+
+        try:
+            # Credit wallet within atomic transaction
+            with transaction.atomic():
+                wallet_balance.balance += amount_decimal
+                wallet_balance.save()
+
+                # Record wallet transaction
+                transaction_description = f"BancABC Credit Push - {channel.upper()} channel"
+                if branch_code:
+                    transaction_description += f" - Branch: {branch_code}"
+                if remarks:
+                    transaction_description += f" - {remarks}"
+                transaction_description += f" - Ref: {bancabc_reference}"
+
+                WalletTransaction.objects.create(
+                    wallet=wallet,
+                    currency=currency_obj,
+                    amount=str(amount_decimal),
+                    transaction_type='deposit',
+                    description=transaction_description,
+                    reference=bancabc_reference
+                )
+
+                # Award loyalty points (10% of amount = 1 point per $10)
+                from loyalty.models import LoyaltyAccount
+                loyalty_account, _ = LoyaltyAccount.objects.get_or_create(user=user)
+                points_earned = int(amount_decimal / 10)
+                if points_earned > 0:
+                    loyalty_account.add_points(
+                        points_earned,
+                        f"Reward: BancABC Wallet Funding ({points_earned} points) - {currency} {amount_decimal} via {channel}"
+                    )
+
+                # Update processed transaction
+                processed_txn.status = 'completed'
+                processed_txn.processed_at = timezone.now()
+                processed_txn.response_data.update({
+                    'status': 'success',
+                    'message': f'Wallet credited successfully with {amount_decimal} {currency}',
+                    'transaction_id': transaction_id,
+                    'fastjet_transaction_id': internal_txn_id,
+                    'customer_id': user.id,
+                    'amount': str(amount_decimal),
+                    'currency': currency,
+                    'new_balance': str(wallet_balance.balance),
+                    'points_earned': points_earned,
+                    'processed_at': processed_txn.processed_at.isoformat(),
+                    'bancabc_reference': bancabc_reference,
+                    'channel': channel
+                })
+                processed_txn.save()
+
+                # Log success
+                logger.info(f"BancABC credit push success: User {user.id}, Amount {amount_decimal} {currency}, Channel {channel}, Ref {bancabc_reference}")
+
+                return Response(processed_txn.response_data, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            # Mark transaction as failed
+            processed_txn.status = 'failed'
+            processed_txn.response_data.update({
+                'status': 'error',
+                'message': f'Processing failed: {str(e)}'
+            })
+            processed_txn.save()
+
+            logger.error(f"BancABC credit push processing error: {str(e)}", exc_info=True)
+            return Response({
+                'status': 'error',
+                'message': 'Internal server error processing credit push'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    except Exception as e:
+        logger.error(f"BancABC credit push error: {str(e)}", exc_info=True)
+        return Response({
+            'status': 'error',
+            'message': 'Internal server error processing credit push'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([BancABCAuthentication])
+@permission_classes([AllowAny])
+@bancabc_rate_limit(max_calls=30, time_window=60)  # 30 calls per minute for reports
+def bancabc_transaction_report(request):
+    """
+    Transaction Report API for BancABC
+    
+    Provides transaction reports for reconciliation purposes.
+    Returns both successful and failed transactions within specified date range.
+    
+    Request Body:
+    {
+        "start_date": "2025-12-01T00:00:00Z",  // Required - ISO 8601 format
+        "end_date": "2025-12-04T23:59:59Z",    // Required - ISO 8601 format
+        "transaction_type": "all",              // Optional - "all", "success", "failed"
+        "channel": "branch",                    // Optional - Filter by channel
+        "currency": "USD",                      // Optional - Filter by currency
+        "page": 1,                              // Optional - Page number (default: 1)
+        "page_size": 50                         // Optional - Records per page (default: 50, max: 1000)
+    }
+    
+    Response:
+    {
+        "status": "success",
+        "report": {
+            "start_date": "2025-12-01T00:00:00Z",
+            "end_date": "2025-12-04T23:59:59Z",
+            "total_transactions": 150,
+            "successful_transactions": 145,
+            "failed_transactions": 5,
+            "total_amount": {
+                "USD": "15000.00",
+                "ZAR": "250000.00"
+            },
+            "transactions": [
+                {
+                    "transaction_id": "FJ-BANCABC-ABC123",
+                    "bancabc_reference": "REF-789012",
+                    "bancabc_transaction_id": "BANCABC-TXN-123456",
+                    "customer_id": 12345,
+                    "phone_number": "263771234567",
+                    "amount": "100.00",
+                    "currency": "USD",
+                    "status": "completed",
+                    "channel": "branch",
+                    "created_at": "2025-12-01T10:30:00Z",
+                    "processed_at": "2025-12-01T10:30:05Z"
+                }
+            ]
+        },
+        "pagination": {
+            "page": 1,
+            "page_size": 50,
+            "total_pages": 3,
+            "total_records": 150
+        },
+        "generated_at": "2025-12-04T10:30:00Z"
+    }
+    """
+    try:
+        # Extract report parameters
+        start_date_str = request.data.get('start_date')
+        end_date_str = request.data.get('end_date')
+        transaction_type = request.data.get('transaction_type', 'all').lower()
+        channel_filter = request.data.get('channel', '').lower()
+        currency_filter = request.data.get('currency', '').upper()
+        page = int(request.data.get('page', 1))
+        page_size = min(int(request.data.get('page_size', 50)), 1000)  # Max 1000 per page
+
+        # Validate required fields
+        if not start_date_str or not end_date_str:
+            return Response({
+                'status': 'error',
+                'message': 'start_date and end_date are required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Parse dates
+        try:
+            from dateutil import parser
+            start_date = parser.isoparse(start_date_str)
+            end_date = parser.isoparse(end_date_str)
+        except Exception:
+            return Response({
+                'status': 'error',
+                'message': 'Invalid date format. Use ISO 8601 format (e.g., 2025-12-01T00:00:00Z)'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Validate date range
+        if start_date > end_date:
+            return Response({
+                'status': 'error',
+                'message': 'start_date must be before end_date'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Limit date range to 90 days for performance
+        date_diff = (end_date - start_date).days
+        if date_diff > 90:
+            return Response({
+                'status': 'error',
+                'message': 'Date range cannot exceed 90 days'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Build query filters
+        query_filters = {
+            'created_at__gte': start_date,
+            'created_at__lte': end_date,
+            'bancabc_transaction_id__isnull': False  # Only BancABC transactions
+        }
+
+        # Filter by transaction status
+        if transaction_type == 'success':
+            query_filters['status'] = 'completed'
+        elif transaction_type == 'failed':
+            query_filters['status'] = 'failed'
+
+        # Filter by currency
+        if currency_filter:
+            currency_obj = Currency.objects.filter(code=currency_filter).first()
+            if currency_obj:
+                query_filters['currency'] = currency_obj
+
+        # Get transactions
+        transactions_query = ProcessedTransaction.objects.filter(**query_filters).order_by('-created_at')
+
+        # Filter by channel (stored in response_data JSON)
+        if channel_filter:
+            transactions_query = transactions_query.filter(response_data__channel=channel_filter)
+
+        # Get total count before pagination
+        total_count = transactions_query.count()
+
+        # Calculate pagination
+        total_pages = (total_count + page_size - 1) // page_size
+        offset = (page - 1) * page_size
+        
+        # Get paginated results
+        transactions = transactions_query[offset:offset + page_size]
+
+        # Build transaction list
+        transaction_list = []
+        total_amounts = {}
+        successful_count = 0
+        failed_count = 0
+
+        for txn in transactions:
+            # Count status
+            if txn.status == 'completed':
+                successful_count += 1
+            elif txn.status == 'failed':
+                failed_count += 1
+
+            # Aggregate amounts by currency
+            if txn.status == 'completed':
+                currency_code = txn.currency.code
+                if currency_code not in total_amounts:
+                    total_amounts[currency_code] = Decimal('0.00')
+                total_amounts[currency_code] += txn.amount
+
+            # Get channel from response_data
+            response_data = txn.response_data or {}
+            
+            transaction_list.append({
+                'transaction_id': txn.transaction_id,
+                'bancabc_reference': txn.bancabc_transaction_id,
+                'bancabc_transaction_id': response_data.get('bancabc_transaction_id', ''),
+                'customer_id': txn.user.id,
+                'phone_number': txn.user.phone_number,
+                'email': txn.user.email,
+                'customer_name': txn.user.get_full_name(),
+                'amount': str(txn.amount),
+                'currency': txn.currency.code,
+                'status': txn.status,
+                'channel': response_data.get('channel', 'unknown'),
+                'operator_id': response_data.get('operator_id', ''),
+                'branch_code': response_data.get('branch_code', ''),
+                'created_at': txn.created_at.isoformat(),
+                'processed_at': txn.processed_at.isoformat() if txn.processed_at else None
+            })
+
+        # Convert Decimal to string for JSON serialization
+        total_amounts_str = {k: str(v) for k, v in total_amounts.items()}
+
+        # Build report response
+        report = {
+            'start_date': start_date.isoformat(),
+            'end_date': end_date.isoformat(),
+            'filters': {
+                'transaction_type': transaction_type,
+                'channel': channel_filter if channel_filter else 'all',
+                'currency': currency_filter if currency_filter else 'all'
+            },
+            'summary': {
+                'total_transactions': total_count,
+                'successful_transactions': successful_count,
+                'failed_transactions': failed_count,
+                'total_amount': total_amounts_str
+            },
+            'transactions': transaction_list
+        }
+
+        # Log report generation
+        logger.info(f"BancABC transaction report generated: {start_date} to {end_date}, {total_count} transactions")
+
+        return Response({
+            'status': 'success',
+            'report': report,
+            'pagination': {
+                'page': page,
+                'page_size': page_size,
+                'total_pages': total_pages,
+                'total_records': total_count
+            },
+            'generated_at': timezone.now().isoformat()
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"BancABC transaction report error: {str(e)}", exc_info=True)
+        return Response({
+            'status': 'error',
+            'message': 'Internal server error generating report'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([BancABCAuthentication])
+@permission_classes([AllowAny])
+@bancabc_rate_limit(max_calls=50, time_window=60)  # 50 calls per minute for payment notifications
+def bancabc_payment_notification(request):
+    """
+    Payment Status Notification API for BancABC
+    
+    BancABC calls this endpoint to notify Fastjet about payment status BEFORE initiating credit push.
+    This ensures wallets are only credited after successful payment verification.
+    
+    TWO-STEP PROCESS:
+    Step 1: BancABC processes payment and calls this endpoint to report status
+    Step 2: If payment successful, BancABC calls Credit Push API to fund wallet
+    
+    Request Body:
+    {
+        "bancabc_transaction_id": "BANCABC-TXN-123456",  // Required - BancABC's unique transaction ID
+        "bancabc_reference": "REF-20251204-001",         // Required - Payment reference
+        "payment_status": "SUCCESS",                      // Required - SUCCESS, FAILED, PENDING
+        "customer_id": 12345,                             // Optional - Fastjet customer ID
+        "phone_number": "263771234567",                   // Optional - Customer phone
+        "amount": 100.00,                                 // Required - Payment amount
+        "currency": "USD",                                // Required - Currency code
+        "channel": "branch",                              // Required - Payment channel
+        "operator_id": "OP123",                           // Optional - Operator who processed
+        "branch_code": "HRE001",                          // Optional - Branch code
+        "payment_method": "CASH",                         // Optional - CASH, CARD, TRANSFER, etc.
+        "payment_date": "2025-12-04T10:30:00Z",          // Optional - Payment timestamp
+        "failure_reason": "Insufficient funds",           // Required if FAILED
+        "customer_account": "BANCABC-ACC-123456",        // Optional - Customer's BancABC account
+        "remarks": "Payment processed successfully"       // Optional - Additional notes
+    }
+    
+    Response (Success):
+    {
+        "status": "success",
+        "message": "Payment status recorded successfully",
+        "bancabc_transaction_id": "BANCABC-TXN-123456",
+        "payment_status": "SUCCESS",
+        "can_proceed_with_credit": true,
+        "fastjet_reference": "FJ-PAY-ABC123DEF456",
+        "recorded_at": "2025-12-04T10:30:15Z",
+        "next_step": "Call Credit Push API to fund customer wallet"
+    }
+    
+    Response (Failed Payment):
+    {
+        "status": "success",
+        "message": "Failed payment recorded",
+        "bancabc_transaction_id": "BANCABC-TXN-123456",
+        "payment_status": "FAILED",
+        "can_proceed_with_credit": false,
+        "failure_reason": "Insufficient funds",
+        "recorded_at": "2025-12-04T10:30:15Z",
+        "next_step": "Do not proceed with wallet credit"
+    }
+    """
+    try:
+        # Extract payment notification data
+        bancabc_transaction_id = request.data.get('bancabc_transaction_id', '').strip()
+        bancabc_reference = request.data.get('bancabc_reference', '').strip()
+        payment_status = request.data.get('payment_status', '').upper().strip()
+        customer_id = request.data.get('customer_id')
+        phone_number = request.data.get('phone_number', '').strip()
+        amount = request.data.get('amount')
+        currency = request.data.get('currency', 'USD').upper()
+        channel = request.data.get('channel', 'unknown').lower()
+        operator_id = request.data.get('operator_id', '').strip()
+        branch_code = request.data.get('branch_code', '').strip()
+        payment_method = request.data.get('payment_method', 'UNKNOWN').upper()
+        payment_date_str = request.data.get('payment_date')
+        failure_reason = request.data.get('failure_reason', '').strip()
+        customer_account = request.data.get('customer_account', '').strip()
+        remarks = request.data.get('remarks', '').strip()[:500]
+
+        # Validation
+        validation_errors = []
+
+        if not bancabc_transaction_id:
+            validation_errors.append('bancabc_transaction_id is required')
+        if not bancabc_reference:
+            validation_errors.append('bancabc_reference is required')
+        if not payment_status:
+            validation_errors.append('payment_status is required')
+        elif payment_status not in ['SUCCESS', 'FAILED', 'PENDING', 'CANCELLED']:
+            validation_errors.append('payment_status must be SUCCESS, FAILED, PENDING, or CANCELLED')
+        
+        if amount is None:
+            validation_errors.append('amount is required')
+        else:
+            try:
+                amount_decimal = Decimal(str(amount))
+                if amount_decimal <= 0:
+                    validation_errors.append('amount must be greater than zero')
+            except (ValueError, TypeError, InvalidOperation):
+                validation_errors.append('amount must be a valid decimal number')
+
+        if not currency:
+            validation_errors.append('currency is required')
+        elif currency != 'USD':
+            validation_errors.append('currency must be USD')
+        
+        if payment_status == 'FAILED' and not failure_reason:
+            validation_errors.append('failure_reason is required when payment_status is FAILED')
+
+        if validation_errors:
+            logger.warning(f"BancABC payment notification validation failed: {', '.join(validation_errors)}")
+            return Response({
+                'status': 'error',
+                'message': 'Validation failed',
+                'errors': validation_errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check for duplicate notification
+        existing_payment = ProcessedTransaction.objects.filter(
+            bancabc_transaction_id=bancabc_transaction_id
+        ).first()
+
+        if existing_payment:
+            logger.info(f"BancABC payment notification - duplicate: {bancabc_transaction_id}")
+            can_proceed = existing_payment.status == 'payment_verified'
+            return Response({
+                'status': 'success',
+                'message': 'Payment status already recorded',
+                'bancabc_transaction_id': bancabc_transaction_id,
+                'payment_status': payment_status,
+                'can_proceed_with_credit': can_proceed,
+                'fastjet_reference': existing_payment.transaction_id,
+                'recorded_at': existing_payment.created_at.isoformat(),
+                'duplicate': True
+            }, status=status.HTTP_200_OK)
+
+        # Find customer (optional for payment notification)
+        user = None
+        if phone_number:
+            normalized_phone = re.sub(r'[^0-9+]', '', phone_number)
+            user = User.objects.filter(phone_number=normalized_phone).first()
+        elif customer_id:
+            try:
+                user = User.objects.filter(id=int(customer_id)).first()
+            except (ValueError, TypeError):
+                pass
+
+        # Get currency object
+        currency_obj = Currency.objects.filter(code=currency.upper()).first()
+        if not currency_obj:
+            # Create currency if it doesn't exist
+            currency_obj = Currency.objects.create(code=currency.upper(), name=currency)
+
+        # Convert amount
+        amount_decimal = Decimal(str(amount))
+
+        # Generate internal Fastjet payment reference
+        import uuid
+        fastjet_payment_ref = f"FJ-PAY-{uuid.uuid4().hex[:12].upper()}"
+
+        # Parse payment date
+        payment_date = None
+        if payment_date_str:
+            try:
+                from dateutil import parser
+                payment_date = parser.isoparse(payment_date_str)
+            except:
+                payment_date = timezone.now()
+        else:
+            payment_date = timezone.now()
+
+        # Determine internal status based on payment status
+        internal_status = 'payment_verified' if payment_status == 'SUCCESS' else 'payment_failed'
+        can_proceed_with_credit = payment_status == 'SUCCESS'
+
+        # Create payment notification record
+        payment_record = ProcessedTransaction.objects.create(
+            idempotency_key=f"payment-notif-{bancabc_transaction_id}",
+            transaction_id=fastjet_payment_ref,
+            user=user,  # Can be None if customer not found
+            amount=amount_decimal,
+            currency=currency_obj,
+            status=internal_status,
+            bancabc_transaction_id=bancabc_transaction_id,
+            created_at=payment_date,
+            response_data={
+                'notification_type': 'payment_status',
+                'bancabc_reference': bancabc_reference,
+                'payment_status': payment_status,
+                'channel': channel,
+                'operator_id': operator_id,
+                'branch_code': branch_code,
+                'payment_method': payment_method,
+                'failure_reason': failure_reason if payment_status == 'FAILED' else None,
+                'customer_account': customer_account,
+                'remarks': remarks,
+                'customer_id': customer_id,
+                'phone_number': phone_number,
+                'notification_received_at': timezone.now().isoformat()
+            }
+        )
+
+        # Prepare response based on payment status
+        if payment_status == 'SUCCESS':
+            message = 'Payment status recorded successfully - proceed with wallet credit'
+            next_step = 'Call Credit Push API with the same bancabc_transaction_id to fund customer wallet'
+            logger.info(f"BancABC payment notification SUCCESS: {bancabc_transaction_id}, Amount: {amount_decimal} {currency}")
+        elif payment_status == 'FAILED':
+            message = 'Failed payment recorded - do not credit wallet'
+            next_step = 'Do not proceed with wallet credit. Inform customer about payment failure.'
+            logger.warning(f"BancABC payment notification FAILED: {bancabc_transaction_id}, Reason: {failure_reason}")
+        elif payment_status == 'PENDING':
+            message = 'Payment pending - wait for final status'
+            next_step = 'Send another notification when payment status is finalized (SUCCESS or FAILED)'
+            logger.info(f"BancABC payment notification PENDING: {bancabc_transaction_id}")
+        else:  # CANCELLED
+            message = 'Payment cancelled - do not credit wallet'
+            next_step = 'Do not proceed with wallet credit. Payment was cancelled.'
+            logger.info(f"BancABC payment notification CANCELLED: {bancabc_transaction_id}")
+
+        response_data = {
+            'status': 'success',
+            'message': message,
+            'bancabc_transaction_id': bancabc_transaction_id,
+            'bancabc_reference': bancabc_reference,
+            'payment_status': payment_status,
+            'can_proceed_with_credit': can_proceed_with_credit,
+            'fastjet_reference': fastjet_payment_ref,
+            'amount': str(amount_decimal),
+            'currency': currency,
+            'recorded_at': payment_record.created_at.isoformat(),
+            'next_step': next_step
+        }
+
+        if payment_status == 'FAILED':
+            response_data['failure_reason'] = failure_reason
+
+        return Response(response_data, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"BancABC payment notification error: {str(e)}", exc_info=True)
+        return Response({
+            'status': 'error',
+            'message': 'Internal server error processing payment notification'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    """
+    Transaction Report API for BancABC
+    
+    Provides transaction reports for reconciliation purposes.
+    Returns both successful and failed transactions within specified date range.
+    
+    Request Body:
+    {
+        "start_date": "2025-12-01T00:00:00Z",  // Required - ISO 8601 format
+        "end_date": "2025-12-04T23:59:59Z",    // Required - ISO 8601 format
+        "transaction_type": "all",              // Optional - "all", "success", "failed"
+        "channel": "branch",                    // Optional - Filter by channel
+        "currency": "USD",                      // Optional - Filter by currency
+        "page": 1,                              // Optional - Page number (default: 1)
+        "page_size": 50                         // Optional - Records per page (default: 50, max: 1000)
+    }
+    
+    Response:
+    {
+        "status": "success",
+        "report": {
+            "start_date": "2025-12-01T00:00:00Z",
+            "end_date": "2025-12-04T23:59:59Z",
+            "total_transactions": 150,
+            "successful_transactions": 145,
+            "failed_transactions": 5,
+            "total_amount": {
+                "USD": "15000.00",
+                "ZAR": "250000.00"
+            },
+            "transactions": [
+                {
+                    "transaction_id": "FJ-BANCABC-ABC123",
+                    "bancabc_reference": "REF-789012",
+                    "bancabc_transaction_id": "BANCABC-TXN-123456",
+                    "customer_id": 12345,
+                    "phone_number": "263771234567",
+                    "amount": "100.00",
+                    "currency": "USD",
+                    "status": "completed",
+                    "channel": "branch",
+                    "created_at": "2025-12-01T10:30:00Z",
+                    "processed_at": "2025-12-01T10:30:05Z"
+                }
+            ]
+        },
+        "pagination": {
+            "page": 1,
+            "page_size": 50,
+            "total_pages": 3,
+            "total_records": 150
+        },
+        "generated_at": "2025-12-04T10:30:00Z"
+    }
+    """
+    try:
+        # Extract report parameters
+        start_date_str = request.data.get('start_date')
+        end_date_str = request.data.get('end_date')
+        transaction_type = request.data.get('transaction_type', 'all').lower()
+        channel_filter = request.data.get('channel', '').lower()
+        currency_filter = request.data.get('currency', '').upper()
+        page = int(request.data.get('page', 1))
+        page_size = min(int(request.data.get('page_size', 50)), 1000)  # Max 1000 per page
+
+        # Validate required fields
+        if not start_date_str or not end_date_str:
+            return Response({
+                'status': 'error',
+                'message': 'start_date and end_date are required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Parse dates
+        try:
+            from dateutil import parser
+            start_date = parser.isoparse(start_date_str)
+            end_date = parser.isoparse(end_date_str)
+        except Exception:
+            return Response({
+                'status': 'error',
+                'message': 'Invalid date format. Use ISO 8601 format (e.g., 2025-12-01T00:00:00Z)'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Validate date range
+        if start_date > end_date:
+            return Response({
+                'status': 'error',
+                'message': 'start_date must be before end_date'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Limit date range to 90 days for performance
+        date_diff = (end_date - start_date).days
+        if date_diff > 90:
+            return Response({
+                'status': 'error',
+                'message': 'Date range cannot exceed 90 days'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Build query filters
+        query_filters = {
+            'created_at__gte': start_date,
+            'created_at__lte': end_date,
+            'bancabc_transaction_id__isnull': False  # Only BancABC transactions
+        }
+
+        # Filter by transaction status
+        if transaction_type == 'success':
+            query_filters['status'] = 'completed'
+        elif transaction_type == 'failed':
+            query_filters['status'] = 'failed'
+
+        # Filter by currency
+        if currency_filter:
+            currency_obj = Currency.objects.filter(code=currency_filter).first()
+            if currency_obj:
+                query_filters['currency'] = currency_obj
+
+        # Get transactions
+        transactions_query = ProcessedTransaction.objects.filter(**query_filters).order_by('-created_at')
+
+        # Filter by channel (stored in response_data JSON)
+        if channel_filter:
+            transactions_query = transactions_query.filter(response_data__channel=channel_filter)
+
+        # Get total count before pagination
+        total_count = transactions_query.count()
+
+        # Calculate pagination
+        total_pages = (total_count + page_size - 1) // page_size
+        offset = (page - 1) * page_size
+        
+        # Get paginated results
+        transactions = transactions_query[offset:offset + page_size]
+
+        # Build transaction list
+        transaction_list = []
+        total_amounts = {}
+        successful_count = 0
+        failed_count = 0
+
+        for txn in transactions:
+            # Count status
+            if txn.status == 'completed':
+                successful_count += 1
+            elif txn.status == 'failed':
+                failed_count += 1
+
+            # Aggregate amounts by currency
+            if txn.status == 'completed':
+                currency_code = txn.currency.code
+                if currency_code not in total_amounts:
+                    total_amounts[currency_code] = Decimal('0.00')
+                total_amounts[currency_code] += txn.amount
+
+            # Get channel from response_data
+            response_data = txn.response_data or {}
+            
+            transaction_list.append({
+                'transaction_id': txn.transaction_id,
+                'bancabc_reference': txn.bancabc_transaction_id,
+                'bancabc_transaction_id': response_data.get('bancabc_transaction_id', ''),
+                'customer_id': txn.user.id,
+                'phone_number': txn.user.phone_number,
+                'email': txn.user.email,
+                'customer_name': txn.user.get_full_name(),
+                'amount': str(txn.amount),
+                'currency': txn.currency.code,
+                'status': txn.status,
+                'channel': response_data.get('channel', 'unknown'),
+                'operator_id': response_data.get('operator_id', ''),
+                'branch_code': response_data.get('branch_code', ''),
+                'created_at': txn.created_at.isoformat(),
+                'processed_at': txn.processed_at.isoformat() if txn.processed_at else None
+            })
+
+        # Convert Decimal to string for JSON serialization
+        total_amounts_str = {k: str(v) for k, v in total_amounts.items()}
+
+        # Build report response
+        report = {
+            'start_date': start_date.isoformat(),
+            'end_date': end_date.isoformat(),
+            'filters': {
+                'transaction_type': transaction_type,
+                'channel': channel_filter if channel_filter else 'all',
+                'currency': currency_filter if currency_filter else 'all'
+            },
+            'summary': {
+                'total_transactions': total_count,
+                'successful_transactions': successful_count,
+                'failed_transactions': failed_count,
+                'total_amount': total_amounts_str
+            },
+            'transactions': transaction_list
+        }
+
+        # Log report generation
+        logger.info(f"BancABC transaction report generated: {start_date} to {end_date}, {total_count} transactions")
+
+        return Response({
+            'status': 'success',
+            'report': report,
+            'pagination': {
+                'page': page,
+                'page_size': page_size,
+                'total_pages': total_pages,
+                'total_records': total_count
+            },
+            'generated_at': timezone.now().isoformat()
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"BancABC transaction report error: {str(e)}", exc_info=True)
+        return Response({
+            'status': 'error',
+            'message': 'Internal server error generating report'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

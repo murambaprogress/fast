@@ -1,0 +1,312 @@
+{% extends 'bancabc/base.html' %}
+
+{% block title %}Transaction Detail{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h2 class="mb-1">
+                <i class="bi bi-receipt text-primary"></i> Transaction Details
+            </h2>
+            <p class="text-muted mb-0">Reference: <strong>{{ transaction.bancabc_reference|default:transaction.transaction_id }}</strong></p>
+        </div>
+        <div>
+            <a href="{% url 'bancabc:transactions' %}" class="btn btn-outline-secondary btn-custom">
+                <i class="bi bi-arrow-left"></i> Back to List
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Transaction Status Banner -->
+<div class="alert {% if transaction.payment_status == 'SUCCESS' %}alert-success{% elif transaction.payment_status == 'FAILED' %}alert-danger{% elif transaction.payment_status == 'PENDING' %}alert-warning{% else %}alert-secondary{% endif %} mb-4">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h5 class="alert-heading mb-1">
+                {% if transaction.payment_status == 'SUCCESS' %}
+                <i class="bi bi-check-circle-fill"></i> Payment Successful
+                {% elif transaction.payment_status == 'FAILED' %}
+                <i class="bi bi-x-circle-fill"></i> Payment Failed
+                {% elif transaction.payment_status == 'PENDING' %}
+                <i class="bi bi-hourglass-split"></i> Payment Pending
+                {% else %}
+                <i class="bi bi-info-circle-fill"></i> {{ transaction.payment_status }}
+                {% endif %}
+            </h5>
+            <p class="mb-0">
+                {% if transaction.payment_verified %}
+                <i class="bi bi-shield-fill-check"></i> Verified and processed
+                {% elif transaction.payment_status == 'SUCCESS' %}
+                <i class="bi bi-shield-exclamation"></i> Awaiting verification
+                {% endif %}
+            </p>
+        </div>
+        {% if transaction.payment_status == 'SUCCESS' and not transaction.payment_verified %}
+        <button class="btn btn-warning" id="verifyBtn">
+            <i class="bi bi-shield-check"></i> Verify Now
+        </button>
+        {% endif %}
+    </div>
+</div>
+
+<div class="row">
+    <!-- Transaction Information -->
+    <div class="col-md-6 mb-4">
+        <div class="card table-custom">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-info-circle"></i> Transaction Information</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-borderless mb-0">
+                    <tr>
+                        <td class="text-muted">BancABC Reference:</td>
+                        <td><strong>{{ transaction.bancabc_reference|default:'—' }}</strong></td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Transaction ID:</td>
+                        <td><strong>{{ transaction.transaction_id }}</strong></td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">BancABC Transaction ID:</td>
+                        <td>{{ transaction.bancabc_transaction_id|default:'—' }}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Amount:</td>
+                        <td><strong class="text-primary" style="font-size: 20px;">${{ transaction.amount }} {{ transaction.currency.code }}</strong></td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Payment Status:</td>
+                        <td>
+                            {% if transaction.payment_status == 'SUCCESS' %}
+                            <span class="badge badge-success-custom">SUCCESS</span>
+                            {% elif transaction.payment_status == 'FAILED' %}
+                            <span class="badge badge-danger-custom">FAILED</span>
+                            {% elif transaction.payment_status == 'PENDING' %}
+                            <span class="badge badge-warning-custom">PENDING</span>
+                            {% else %}
+                            <span class="badge badge-secondary-custom">{{ transaction.payment_status|default:transaction.status }}</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Verification:</td>
+                        <td>
+                            {% if transaction.payment_verified %}
+                            <i class="bi bi-check-circle-fill text-success"></i> <strong>Verified</strong>
+                            {% else %}
+                            <i class="bi bi-x-circle text-warning"></i> Not verified
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Payment Method:</td>
+                        <td><span class="badge bg-info">{{ transaction.payment_method|default:'—' }}</span></td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Payment Channel:</td>
+                        <td>{{ transaction.payment_channel|default:'—' }}</td>
+                    </tr>
+                    {% if transaction.failure_reason %}
+                    <tr>
+                        <td class="text-muted">Failure Reason:</td>
+                        <td><span class="text-danger">{{ transaction.failure_reason }}</span></td>
+                    </tr>
+                    {% endif %}
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Customer Information -->
+    <div class="col-md-6 mb-4">
+        <div class="card table-custom">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-person"></i> Customer Information</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-borderless mb-0">
+                    <tr>
+                        <td class="text-muted">Name:</td>
+                        <td><strong>{{ transaction.user.get_full_name|default:transaction.user.username }}</strong></td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Phone Number:</td>
+                        <td>{{ transaction.user.phone_number }}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Email:</td>
+                        <td>{{ transaction.user.email|default:'—' }}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Customer Account:</td>
+                        <td>{{ transaction.customer_account|default:'—' }}</td>
+                    </tr>
+                    {% if wallet_balance %}
+                    <tr>
+                        <td class="text-muted">Current Balance:</td>
+                        <td><strong class="text-success">${{ wallet_balance.balance }} {{ wallet_balance.currency.code }}</strong></td>
+                    </tr>
+                    {% endif %}
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- BancABC Channel Details -->
+    <div class="col-md-6 mb-4">
+        <div class="card table-custom">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-building"></i> BancABC Channel Details</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-borderless mb-0">
+                    <tr>
+                        <td class="text-muted">Branch Code:</td>
+                        <td><strong>{{ transaction.branch_code|default:'—' }}</strong></td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Operator ID:</td>
+                        <td>{{ transaction.operator_id|default:'—' }}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Payment Date:</td>
+                        <td>{{ transaction.payment_date|date:"Y-m-d H:i:s"|default:'—' }}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Remarks:</td>
+                        <td>{{ transaction.remarks|default:'—' }}</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="col-md-6 mb-4">
+        <div class="card table-custom">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-clock-history"></i> Transaction Timeline</h5>
+            </div>
+            <div class="card-body">
+                <div class="timeline">
+                    <div class="timeline-item">
+                        <div class="timeline-marker bg-primary"></div>
+                        <div class="timeline-content">
+                            <strong>Transaction Created</strong>
+                            <br><small class="text-muted">{{ transaction.created_at|date:"Y-m-d H:i:s" }}</small>
+                        </div>
+                    </div>
+                    {% if transaction.notified_at %}
+                    <div class="timeline-item">
+                        <div class="timeline-marker {% if transaction.payment_status == 'SUCCESS' %}bg-success{% else %}bg-danger{% endif %}"></div>
+                        <div class="timeline-content">
+                            <strong>Payment Notified ({{ transaction.payment_status }})</strong>
+                            <br><small class="text-muted">{{ transaction.notified_at|date:"Y-m-d H:i:s" }}</small>
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% if transaction.processed_at %}
+                    <div class="timeline-item">
+                        <div class="timeline-marker bg-info"></div>
+                        <div class="timeline-content">
+                            <strong>Wallet Credited</strong>
+                            <br><small class="text-muted">{{ transaction.processed_at|date:"Y-m-d H:i:s" }}</small>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Wallet Impact -->
+    {% if transaction.payment_verified and wallet_txn %}
+    <div class="col-12 mb-4">
+        <div class="alert alert-success">
+            <h5 class="alert-heading"><i class="bi bi-wallet2"></i> Wallet Impact</h5>
+            <div class="row">
+                <div class="col-md-3">
+                    <strong>Amount Credited:</strong><br>
+                    <span class="fs-5">${{ transaction.amount }} {{ transaction.currency.code }}</span>
+                </div>
+                <div class="col-md-3">
+                    <strong>Current Balance:</strong><br>
+                    <span class="fs-5">${{ wallet_balance.balance }} {{ wallet_balance.currency.code }}</span>
+                </div>
+                <div class="col-md-3">
+                    <strong>Loyalty Points Earned:</strong><br>
+                    <span class="fs-5">+{% widthratio transaction.amount 10 1 %} points</span>
+                </div>
+                <div class="col-md-3">
+                    <strong>Transaction Ref:</strong><br>
+                    <small>{{ wallet_txn.reference }}</small>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% elif transaction.payment_status == 'FAILED' %}
+    <div class="col-12 mb-4">
+        <div class="alert alert-danger">
+            <h5 class="alert-heading"><i class="bi bi-x-circle"></i> Payment Failed</h5>
+            <p><strong>Reason:</strong> {{ transaction.failure_reason|default:'Not specified' }}</p>
+            <p class="mb-0">Wallet was not credited</p>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<style>
+.timeline {
+    position: relative;
+    padding-left: 30px;
+}
+.timeline::before {
+    content: '';
+    position: absolute;
+    left: 7px;
+    top: 10px;
+    bottom: 10px;
+    width: 2px;
+    background: #dee2e6;
+}
+.timeline-item {
+    position: relative;
+    margin-bottom: 20px;
+}
+.timeline-marker {
+    position: absolute;
+    left: -24px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 3px solid white;
+}
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+$(document).ready(function() {
+    $('#verifyBtn').click(function() {
+        if (confirm('Verify this transaction?')) {
+            $.ajax({
+                url: '/bancabc/api/verify/{{ transaction.id }}/',
+                type: 'POST',
+                headers: {
+                    'X-CSRFToken': '{{ csrf_token }}'
+                },
+                success: function(response) {
+                    if (response.status === 'success') {
+                        location.reload();
+                    }
+                },
+                error: function() {
+                    alert('Failed to verify transaction');
+                }
+            });
+        }
+    });
+});
+</script>
+{% endblock %}

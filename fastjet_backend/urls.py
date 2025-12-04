@@ -41,6 +41,8 @@ urlpatterns = [
     path('api/booking/',include('booking.urls')),
     path('api/loyalty/', include('loyalty.urls')),
     path('api/creditbooking/', include('creditbooking.urls')),
+    # BancABC Dashboard Frontend
+    path('bancabc/', include('wallets.bancabc_urls')),
     # Serve built frontend asset bundle files (JS/CSS/images)
     re_path(r'^assets/(?P<path>.*)$', _assets_serve),
     # Serve public folder copied files (favicon, robots, etc.)

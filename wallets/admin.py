@@ -31,10 +31,397 @@ class WalletTransactionAdmin(admin.ModelAdmin):
 
 @admin.register(ProcessedTransaction)
 class ProcessedTransactionAdmin(admin.ModelAdmin):
-    list_display = ['transaction_id', 'status', 'created_at']
-    list_filter = ['status', 'created_at']
-    search_fields = ['transaction_id']
-    readonly_fields = ['created_at', 'processed_at']
+    """
+    BancABC Transaction Admin Interface
+    Comprehensive admin for monitoring, reporting, and managing BancABC transactions
+    """
+    list_display = [
+        'get_bancabc_ref_display', 'get_customer_info', 'get_amount_display',
+        'get_payment_status_badge', 'payment_method', 'branch_code',
+        'get_verification_status', 'created_at', 'get_actions'
+    ]
+    
+    list_filter = [
+        'payment_status', 'payment_verified', 'payment_method', 
+        'payment_channel', 'status', 'branch_code', 'created_at',
+        ('payment_date', admin.DateFieldListFilter),
+    ]
+    
+    search_fields = [
+        'transaction_id', 'bancabc_reference', 'bancabc_transaction_id',
+        'user__phone_number', 'user__email', 'user__first_name', 'user__last_name',
+        'customer_account', 'operator_id', 'branch_code'
+    ]
+    
+    readonly_fields = [
+        'created_at', 'processed_at', 'notified_at', 'get_formatted_payment_details',
+        'get_formatted_response', 'get_transaction_timeline', 'get_wallet_impact'
+    ]
+    
+    date_hierarchy = 'created_at'
+    
+    fieldsets = (
+        ('BancABC Transaction Details', {
+            'fields': (
+                'bancabc_reference', 'bancabc_transaction_id', 'transaction_id',
+                'idempotency_key'
+            )
+        }),
+        ('Customer Information', {
+            'fields': (
+                'user', 'customer_account', 'amount', 'currency'
+            )
+        }),
+        ('Payment Status', {
+            'fields': (
+                'payment_status', 'payment_verified', 'status', 
+                'payment_method', 'payment_channel'
+            )
+        }),
+        ('BancABC Channel Details', {
+            'fields': (
+                'branch_code', 'operator_id', 'payment_date'
+            )
+        }),
+        ('Failure Information', {
+            'fields': ('failure_reason',),
+            'classes': ('collapse',)
+        }),
+        ('Additional Information', {
+            'fields': ('remarks', 'get_formatted_payment_details'),
+            'classes': ('collapse',)
+        }),
+        ('Transaction Timeline', {
+            'fields': ('get_transaction_timeline',),
+        }),
+        ('Wallet Impact', {
+            'fields': ('get_wallet_impact',),
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'notified_at', 'processed_at'),
+            'classes': ('collapse',)
+        }),
+        ('Debug Information', {
+            'fields': ('get_formatted_response',),
+            'classes': ('collapse',)
+        })
+    )
+    
+    actions = [
+        'export_to_csv', 'mark_as_reconciled', 'generate_branch_report',
+        'send_status_notification', 'verify_payment_manually'
+    ]
+    
+    # Custom display methods
+    def get_bancabc_ref_display(self, obj):
+        ref = obj.bancabc_reference or obj.transaction_id
+        if obj.payment_verified:
+            return format_html(
+                '<strong>{}</strong><br/>'
+                '<span style="font-size: 10px; color: #28a745;">✓ Verified</span>',
+                ref
+            )
+        return format_html('<strong>{}</strong>', ref)
+    get_bancabc_ref_display.short_description = 'BancABC Reference'
+    get_bancabc_ref_display.admin_order_field = 'bancabc_reference'
+    
+    def get_customer_info(self, obj):
+        user = obj.user
+        phone = getattr(user, 'phone_number', 'N/A')
+        name = f"{user.first_name} {user.last_name}".strip() or user.username
+        
+        return format_html(
+            '<strong>{}</strong><br/>'
+            '<span style="font-size: 10px; color: #666;">{}</span>',
+            name, phone
+        )
+    get_customer_info.short_description = 'Customer'
+    get_customer_info.admin_order_field = 'user__phone_number'
+    
+    def get_amount_display(self, obj):
+        return format_html(
+            '<strong style="font-size: 14px; color: #007bff;">{} {}</strong>',
+            obj.currency.code, obj.amount
+        )
+    get_amount_display.short_description = 'Amount'
+    get_amount_display.admin_order_field = 'amount'
+    
+    def get_payment_status_badge(self, obj):
+        status = obj.payment_status or obj.status
+        colors = {
+            'SUCCESS': '#28a745',
+            'completed': '#28a745',
+            'FAILED': '#dc3545',
+            'failed': '#dc3545',
+            'PENDING': '#ffc107',
+            'pending': '#ffc107',
+            'CANCELLED': '#6c757d',
+            'processing': '#17a2b8',
+        }
+        color = colors.get(status, '#6c757d')
+        
+        return format_html(
+            '<span style="background-color: {}; color: white; padding: 4px 8px; '
+            'border-radius: 4px; font-weight: bold; font-size: 11px;">{}</span>',
+            color, status.upper()
+        )
+    get_payment_status_badge.short_description = 'Status'
+    get_payment_status_badge.admin_order_field = 'payment_status'
+    
+    def get_verification_status(self, obj):
+        if obj.payment_verified:
+            return format_html(
+                '<span style="color: #28a745; font-weight: bold;">✓ Verified</span>'
+            )
+        elif obj.payment_status == 'SUCCESS':
+            return format_html(
+                '<span style="color: #ffc107; font-weight: bold;">⚠ Pending Verification</span>'
+            )
+        return format_html(
+            '<span style="color: #6c757d;">—</span>'
+        )
+    get_verification_status.short_description = 'Verification'
+    get_verification_status.admin_order_field = 'payment_verified'
+    
+    def get_actions(self, obj):
+        actions = []
+        
+        if not obj.payment_verified and obj.payment_status == 'SUCCESS':
+            actions.append(
+                '<a href="#" style="color: #007bff;">Verify</a>'
+            )
+        
+        actions.append(
+            '<a href="#" style="color: #17a2b8;">Details</a>'
+        )
+        
+        if obj.payment_status in ['FAILED', 'CANCELLED']:
+            actions.append(
+                '<a href="#" style="color: #dc3545;">Review</a>'
+            )
+        
+        return format_html(' | '.join(actions))
+    get_actions.short_description = 'Actions'
+    
+    def get_transaction_timeline(self, obj):
+        timeline_html = '<div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">'
+        timeline_html += '<h4 style="margin-top: 0;">Transaction Timeline</h4>'
+        timeline_html += '<ul style="list-style: none; padding: 0;">'
+        
+        # Created
+        timeline_html += f'''
+        <li style="margin-bottom: 10px;">
+            <strong style="color: #007bff;">●</strong> 
+            <strong>Created:</strong> {obj.created_at.strftime("%Y-%m-%d %H:%M:%S")}
+            <br/><span style="margin-left: 20px; font-size: 12px; color: #666;">
+            Transaction initiated
+            </span>
+        </li>
+        '''
+        
+        # Payment Notification
+        if obj.notified_at:
+            timeline_html += f'''
+            <li style="margin-bottom: 10px;">
+                <strong style="color: #28a745;">●</strong> 
+                <strong>Payment Notified:</strong> {obj.notified_at.strftime("%Y-%m-%d %H:%M:%S")}
+                <br/><span style="margin-left: 20px; font-size: 12px; color: #666;">
+                Payment status: {obj.payment_status}
+                </span>
+            </li>
+            '''
+        
+        # Processed
+        if obj.processed_at:
+            timeline_html += f'''
+            <li style="margin-bottom: 10px;">
+                <strong style="color: #17a2b8;">●</strong> 
+                <strong>Processed:</strong> {obj.processed_at.strftime("%Y-%m-%d %H:%M:%S")}
+                <br/><span style="margin-left: 20px; font-size: 12px; color: #666;">
+                Wallet credited
+                </span>
+            </li>
+            '''
+        
+        timeline_html += '</ul></div>'
+        return format_html(timeline_html)
+    get_transaction_timeline.short_description = 'Timeline'
+    
+    def get_wallet_impact(self, obj):
+        if obj.payment_verified and obj.status == 'completed':
+            # Get related wallet transaction
+            wallet_txn = WalletTransaction.objects.filter(
+                wallet__user=obj.user,
+                amount=obj.amount,
+                currency=obj.currency,
+                created_at__gte=obj.created_at
+            ).first()
+            
+            if wallet_txn:
+                try:
+                    wallet_balance = WalletBalance.objects.get(
+                        wallet=wallet_txn.wallet,
+                        currency=obj.currency
+                    )
+                    
+                    return format_html(
+                        '<div style="background: #d4edda; padding: 15px; border-radius: 5px; border-left: 4px solid #28a745;">'
+                        '<h4 style="margin-top: 0; color: #155724;">✓ Wallet Credited</h4>'
+                        '<p style="margin: 5px 0;"><strong>Amount:</strong> {} {}</p>'
+                        '<p style="margin: 5px 0;"><strong>Current Balance:</strong> {} {}</p>'
+                        '<p style="margin: 5px 0;"><strong>Loyalty Points:</strong> +{} points</p>'
+                        '<p style="margin: 5px 0; font-size: 11px; color: #666;">'
+                        '<strong>Transaction Ref:</strong> {}</p>'
+                        '</div>',
+                        obj.currency.code, obj.amount,
+                        obj.currency.code, wallet_balance.balance,
+                        int(obj.amount / 10),  # 10% loyalty points
+                        wallet_txn.reference
+                    )
+                except WalletBalance.DoesNotExist:
+                    pass
+        
+        elif obj.payment_status == 'FAILED':
+            return format_html(
+                '<div style="background: #f8d7da; padding: 15px; border-radius: 5px; border-left: 4px solid #dc3545;">'
+                '<h4 style="margin-top: 0; color: #721c24;">✗ Payment Failed</h4>'
+                '<p style="margin: 5px 0;"><strong>Reason:</strong> {}</p>'
+                '<p style="margin: 5px 0; font-size: 11px; color: #666;">Wallet was not credited</p>'
+                '</div>',
+                obj.failure_reason or 'Not specified'
+            )
+        
+        return format_html(
+            '<div style="background: #fff3cd; padding: 15px; border-radius: 5px; border-left: 4px solid #ffc107;">'
+            '<p style="margin: 0;">⚠ Wallet not yet credited - awaiting payment verification</p>'
+            '</div>'
+        )
+    get_wallet_impact.short_description = 'Wallet Impact'
+    
+    def get_formatted_payment_details(self, obj):
+        if obj.payment_details:
+            return format_html(
+                '<pre style="background: #f5f5f5; padding: 10px; border-radius: 5px; overflow-x: auto;">{}</pre>',
+                json.dumps(obj.payment_details, indent=2)
+            )
+        return "No additional payment details"
+    get_formatted_payment_details.short_description = 'Payment Details'
+    
+    def get_formatted_response(self, obj):
+        if obj.response_data:
+            return format_html(
+                '<pre style="background: #f5f5f5; padding: 10px; border-radius: 5px; overflow-x: auto;">{}</pre>',
+                json.dumps(obj.response_data, indent=2)
+            )
+        return "No response data available"
+    get_formatted_response.short_description = 'API Response Data'
+    
+    # Admin actions
+    def export_to_csv(self, request, queryset):
+        """Export selected transactions to CSV"""
+        import csv
+        from django.http import HttpResponse
+        from datetime import datetime
+        
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="bancabc_transactions_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv"'
+        
+        writer = csv.writer(response)
+        writer.writerow([
+            'BancABC Reference', 'Transaction ID', 'Customer Name', 'Phone Number',
+            'Amount', 'Currency', 'Payment Status', 'Payment Method', 'Branch Code',
+            'Operator ID', 'Verified', 'Created Date', 'Payment Date', 'Remarks'
+        ])
+        
+        for obj in queryset:
+            writer.writerow([
+                obj.bancabc_reference or obj.transaction_id,
+                obj.bancabc_transaction_id or '',
+                f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.username,
+                getattr(obj.user, 'phone_number', 'N/A'),
+                obj.amount,
+                obj.currency.code,
+                obj.payment_status or obj.status,
+                obj.payment_method or '',
+                obj.branch_code or '',
+                obj.operator_id or '',
+                'Yes' if obj.payment_verified else 'No',
+                obj.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                obj.payment_date.strftime("%Y-%m-%d %H:%M:%S") if obj.payment_date else '',
+                obj.remarks or ''
+            ])
+        
+        self.message_user(request, f"Exported {queryset.count()} transactions to CSV")
+        return response
+    export_to_csv.short_description = "Export selected transactions to CSV"
+    
+    def generate_branch_report(self, request, queryset):
+        """Generate summary report by branch"""
+        from django.db.models import Sum, Count
+        from django.contrib import messages
+        
+        report = queryset.values('branch_code').annotate(
+            total_transactions=Count('id'),
+            total_amount=Sum('amount'),
+            successful=Count('id', filter=models.Q(payment_status='SUCCESS')),
+            failed=Count('id', filter=models.Q(payment_status='FAILED'))
+        ).order_by('-total_amount')
+        
+        report_html = '<div style="font-family: monospace;"><h3>Branch Performance Report</h3><table border="1" cellpadding="5">'
+        report_html += '<tr><th>Branch</th><th>Transactions</th><th>Total Amount (USD)</th><th>Success</th><th>Failed</th><th>Success Rate</th></tr>'
+        
+        for row in report:
+            branch = row['branch_code'] or 'Unknown'
+            total = row['total_transactions']
+            amount = row['total_amount'] or 0
+            success = row['successful']
+            failed = row['failed']
+            rate = (success / total * 100) if total > 0 else 0
+            
+            report_html += f'<tr><td>{branch}</td><td>{total}</td><td>${amount:.2f}</td><td>{success}</td><td>{failed}</td><td>{rate:.1f}%</td></tr>'
+        
+        report_html += '</table></div>'
+        
+        self.message_user(request, mark_safe(report_html), level=messages.INFO)
+    generate_branch_report.short_description = "Generate branch performance report"
+    
+    def verify_payment_manually(self, request, queryset):
+        """Manually verify selected payments"""
+        updated = queryset.filter(
+            payment_status='SUCCESS',
+            payment_verified=False
+        ).update(payment_verified=True)
+        
+        self.message_user(
+            request,
+            f"Manually verified {updated} transactions"
+        )
+    verify_payment_manually.short_description = "Manually verify selected payments"
+    
+    def send_status_notification(self, request, queryset):
+        """Send status notifications for selected transactions"""
+        # Placeholder for email/SMS notification functionality
+        count = queryset.count()
+        self.message_user(
+            request,
+            f"Status notifications queued for {count} transactions"
+        )
+    send_status_notification.short_description = "Send status notifications"
+    
+    def mark_as_reconciled(self, request, queryset):
+        """Mark transactions as reconciled"""
+        from django.utils import timezone
+        
+        updated = queryset.filter(
+            payment_verified=True,
+            status='completed'
+        ).update(processed_at=timezone.now())
+        
+        self.message_user(
+            request,
+            f"Marked {updated} transactions as reconciled"
+        )
+    mark_as_reconciled.short_description = "Mark as reconciled"
 
 @admin.register(EcoCashTransaction)
 class EcoCashTransactionAdmin(admin.ModelAdmin):

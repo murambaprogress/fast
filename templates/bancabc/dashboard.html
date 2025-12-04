@@ -1,0 +1,286 @@
+{% extends 'bancabc/base.html' %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h2 class="mb-1"><i class="bi bi-speedometer2 text-primary"></i> BancABC Transaction Dashboard</h2>
+            <p class="text-muted mb-0">Real-time monitoring and analytics</p>
+        </div>
+        <div>
+            <a href="{% url 'bancabc:export_csv' %}?date_from={{ date_from }}&date_to={{ date_to }}" 
+               class="btn btn-success btn-custom me-2">
+                <i class="bi bi-download"></i> Export CSV
+            </a>
+            <button class="btn btn-primary btn-custom" id="refreshBtn">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Date Filter -->
+<div class="filter-card">
+    <form method="GET" class="row g-3 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label"><i class="bi bi-calendar3"></i> From Date</label>
+            <input type="date" name="date_from" class="form-control" value="{{ date_from }}">
+        </div>
+        <div class="col-md-4">
+            <label class="form-label"><i class="bi bi-calendar3"></i> To Date</label>
+            <input type="date" name="date_to" class="form-control" value="{{ date_to }}">
+        </div>
+        <div class="col-md-4">
+            <button type="submit" class="btn btn-primary btn-custom w-100">
+                <i class="bi bi-filter"></i> Apply Filter
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- Statistics Cards -->
+<div class="row">
+    <div class="col-md-6 col-lg-3">
+        <div class="card stat-card primary">
+            <div class="icon bg-primary bg-opacity-10 text-primary">
+                <i class="bi bi-receipt"></i>
+            </div>
+            <div class="stat-label">Total Transactions</div>
+            <div class="stat-value">{{ stats.total_transactions|default:0 }}</div>
+            <small class="text-muted">
+                <i class="bi bi-clock"></i> {{ date_from }} to {{ date_to }}
+            </small>
+        </div>
+    </div>
+    
+    <div class="col-md-6 col-lg-3">
+        <div class="card stat-card success">
+            <div class="icon bg-success bg-opacity-10 text-success">
+                <i class="bi bi-check-circle-fill"></i>
+            </div>
+            <div class="stat-label">Successful</div>
+            <div class="stat-value text-success">{{ stats.successful|default:0 }}</div>
+            <div class="progress progress-custom mt-2">
+                <div class="progress-bar bg-success progress-bar-custom" 
+                     style="width: {{ stats.success_rate|floatformat:0 }}%"></div>
+            </div>
+            <small class="text-muted mt-1">{{ stats.success_rate|floatformat:1 }}% success rate</small>
+        </div>
+    </div>
+    
+    <div class="col-md-6 col-lg-3">
+        <div class="card stat-card info">
+            <div class="icon bg-info bg-opacity-10 text-info">
+                <i class="bi bi-currency-dollar"></i>
+            </div>
+            <div class="stat-label">Total Amount</div>
+            <div class="stat-value text-info">$<span id="totalAmount">{{ stats.total_amount|floatformat:2 }}</span></div>
+            <small class="text-muted">USD</small>
+        </div>
+    </div>
+    
+    <div class="col-md-6 col-lg-3">
+        <div class="card stat-card danger">
+            <div class="icon bg-danger bg-opacity-10 text-danger">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+            </div>
+            <div class="stat-label">Failed</div>
+            <div class="stat-value text-danger">{{ stats.failed|default:0 }}</div>
+            <small class="text-muted">
+                <i class="bi bi-hourglass-split"></i> Pending: {{ stats.pending|default:0 }}
+            </small>
+        </div>
+    </div>
+</div>
+
+<!-- Additional Stats Row -->
+<div class="row">
+    <div class="col-md-6">
+        <div class="card stat-card warning">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <div class="stat-label">Unverified Payments</div>
+                    <div class="stat-value text-warning">{{ stats.unverified|default:0 }}</div>
+                    <small class="text-muted">Requires manual verification</small>
+                </div>
+                <div class="icon bg-warning bg-opacity-10 text-warning">
+                    <i class="bi bi-shield-exclamation"></i>
+                </div>
+            </div>
+            {% if stats.unverified > 0 %}
+            <a href="{% url 'bancabc:transactions' %}?verified=no&status=SUCCESS" 
+               class="btn btn-sm btn-warning mt-3">
+                <i class="bi bi-eye"></i> View Unverified
+            </a>
+            {% endif %}
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card stat-card success">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <div class="stat-label">Verified Payments</div>
+                    <div class="stat-value text-success">{{ stats.verified|default:0 }}</div>
+                    <small class="text-muted">Successfully processed</small>
+                </div>
+                <div class="icon bg-success bg-opacity-10 text-success">
+                    <i class="bi bi-shield-check"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Branch Performance -->
+{% if branch_stats %}
+<div class="card table-custom mt-4">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-building"></i> Top Performing Branches</h5>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Branch Code</th>
+                        <th>Total Transactions</th>
+                        <th>Successful</th>
+                        <th>Failed</th>
+                        <th>Total Amount</th>
+                        <th>Success Rate</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for branch in branch_stats %}
+                    <tr>
+                        <td>
+                            <strong>{{ branch.branch_code|default:'Unknown' }}</strong>
+                        </td>
+                        <td>{{ branch.total }}</td>
+                        <td><span class="badge bg-success">{{ branch.successful }}</span></td>
+                        <td><span class="badge bg-danger">{{ branch.failed }}</span></td>
+                        <td><strong>${{ branch.amount|default:0|floatformat:2 }}</strong></td>
+                        <td>
+                            {% widthratio branch.successful branch.total 100 as success_rate %}
+                            <div class="d-flex align-items-center">
+                                <div class="progress progress-custom flex-grow-1 me-2" style="width: 60px;">
+                                    <div class="progress-bar bg-success progress-bar-custom" 
+                                         style="width: {{ success_rate }}%"></div>
+                                </div>
+                                <small>{{ success_rate }}%</small>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Recent Transactions -->
+<div class="card table-custom mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-clock-history"></i> Recent Transactions</h5>
+        <a href="{% url 'bancabc:transactions' %}" class="btn btn-sm btn-primary">
+            View All <i class="bi bi-arrow-right"></i>
+        </a>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Reference</th>
+                        <th>Customer</th>
+                        <th>Amount</th>
+                        <th>Status</th>
+                        <th>Method</th>
+                        <th>Branch</th>
+                        <th>Date</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for txn in recent_transactions %}
+                    <tr>
+                        <td>
+                            <strong>{{ txn.bancabc_reference|default:txn.transaction_id }}</strong>
+                            {% if txn.payment_verified %}
+                            <i class="bi bi-check-circle-fill text-success" title="Verified"></i>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div>{{ txn.user.get_full_name|default:txn.user.username }}</div>
+                            <small class="text-muted">{{ txn.user.phone_number }}</small>
+                        </td>
+                        <td><strong>${{ txn.amount }}</strong></td>
+                        <td>
+                            {% if txn.payment_status == 'SUCCESS' %}
+                            <span class="badge badge-success-custom">SUCCESS</span>
+                            {% elif txn.payment_status == 'FAILED' %}
+                            <span class="badge badge-danger-custom">FAILED</span>
+                            {% elif txn.payment_status == 'PENDING' %}
+                            <span class="badge badge-warning-custom">PENDING</span>
+                            {% else %}
+                            <span class="badge badge-secondary-custom">{{ txn.payment_status|default:txn.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="badge bg-info">{{ txn.payment_method|default:'N/A' }}</span>
+                        </td>
+                        <td>{{ txn.branch_code|default:'—' }}</td>
+                        <td>
+                            <small>{{ txn.created_at|date:"Y-m-d H:i" }}</small>
+                        </td>
+                        <td>
+                            <a href="{% url 'bancabc:transaction_detail' txn.id %}" 
+                               class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-eye"></i>
+                            </a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="8" class="text-center py-4">
+                            <i class="bi bi-inbox" style="font-size: 48px; color: #ccc;"></i>
+                            <p class="text-muted mt-2">No transactions found for this period</p>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+$(document).ready(function() {
+    // Refresh button
+    $('#refreshBtn').click(function() {
+        location.reload();
+    });
+    
+    // Auto-refresh stats every 30 seconds
+    setInterval(function() {
+        $.ajax({
+            url: '{% url "bancabc:api_stats" %}',
+            data: {
+                date_from: '{{ date_from }}',
+                date_to: '{{ date_to }}'
+            },
+            success: function(data) {
+                // Update stats without full page reload
+                $('#totalAmount').text(data.amount.toFixed(2));
+            }
+        });
+    }, 30000);
+});
+</script>
+{% endblock %}

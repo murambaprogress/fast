@@ -1,0 +1,264 @@
+{% extends 'bancabc/base.html' %}
+
+{% block title %}Transactions{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h2 class="mb-1"><i class="bi bi-list-ul text-primary"></i> Transaction List</h2>
+            <p class="text-muted mb-0">Search and filter BancABC transactions</p>
+        </div>
+        <div>
+            <a href="{% url 'bancabc:export_csv' %}{% if filters %}?{% for key, value in filters.items %}{% if value %}{{ key }}={{ value }}&{% endif %}{% endfor %}{% endif %}" 
+               class="btn btn-success btn-custom">
+                <i class="bi bi-download"></i> Export Filtered
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Advanced Filters -->
+<div class="filter-card">
+    <h6 class="mb-3"><i class="bi bi-funnel"></i> Filters</h6>
+    <form method="GET">
+        <div class="row g-3">
+            <div class="col-md-3">
+                <label class="form-label">Search</label>
+                <input type="text" name="search" class="form-control" 
+                       placeholder="Phone, name, reference..." 
+                       value="{{ filters.search }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Status</label>
+                <select name="status" class="form-select">
+                    <option value="">All</option>
+                    <option value="SUCCESS" {% if filters.status == 'SUCCESS' %}selected{% endif %}>SUCCESS</option>
+                    <option value="FAILED" {% if filters.status == 'FAILED' %}selected{% endif %}>FAILED</option>
+                    <option value="PENDING" {% if filters.status == 'PENDING' %}selected{% endif %}>PENDING</option>
+                    <option value="CANCELLED" {% if filters.status == 'CANCELLED' %}selected{% endif %}>CANCELLED</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Method</label>
+                <select name="payment_method" class="form-select">
+                    <option value="">All</option>
+                    <option value="branch" {% if filters.payment_method == 'branch' %}selected{% endif %}>Branch</option>
+                    <option value="digital" {% if filters.payment_method == 'digital' %}selected{% endif %}>Digital</option>
+                    <option value="kiosk" {% if filters.payment_method == 'kiosk' %}selected{% endif %}>Kiosk</option>
+                    <option value="agent" {% if filters.payment_method == 'agent' %}selected{% endif %}>Agent</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Branch</label>
+                <select name="branch_code" class="form-select">
+                    <option value="">All</option>
+                    {% for branch in branches %}
+                    <option value="{{ branch }}" {% if filters.branch_code == branch %}selected{% endif %}>{{ branch }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Verified</label>
+                <select name="verified" class="form-select">
+                    <option value="">All</option>
+                    <option value="yes" {% if filters.verified == 'yes' %}selected{% endif %}>Yes</option>
+                    <option value="no" {% if filters.verified == 'no' %}selected{% endif %}>No</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">From Date</label>
+                <input type="date" name="date_from" class="form-control" value="{{ filters.date_from }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">To Date</label>
+                <input type="date" name="date_to" class="form-control" value="{{ filters.date_to }}">
+            </div>
+            <div class="col-md-4 d-flex align-items-end gap-2">
+                <button type="submit" class="btn btn-primary btn-custom flex-grow-1">
+                    <i class="bi bi-search"></i> Search
+                </button>
+                <a href="{% url 'bancabc:transactions' %}" class="btn btn-outline-secondary btn-custom">
+                    <i class="bi bi-x-circle"></i> Clear
+                </a>
+            </div>
+        </div>
+    </form>
+</div>
+
+<!-- Transactions Table -->
+<div class="card table-custom">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">
+            <i class="bi bi-table"></i> Transactions 
+            <span class="badge bg-primary">{{ page_obj.paginator.count }} total</span>
+        </h5>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>BancABC Reference</th>
+                        <th>Customer</th>
+                        <th>Amount</th>
+                        <th>Status</th>
+                        <th>Method</th>
+                        <th>Branch</th>
+                        <th>Operator</th>
+                        <th>Verified</th>
+                        <th>Date</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for txn in page_obj %}
+                    <tr>
+                        <td>
+                            <div><strong>{{ txn.bancabc_reference|default:txn.transaction_id|truncatechars:20 }}</strong></div>
+                            {% if txn.bancabc_transaction_id %}
+                            <small class="text-muted">ID: {{ txn.bancabc_transaction_id|truncatechars:15 }}</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div><strong>{{ txn.user.get_full_name|default:txn.user.username }}</strong></div>
+                            <small class="text-muted">{{ txn.user.phone_number }}</small>
+                        </td>
+                        <td>
+                            <strong class="text-primary">${{ txn.amount }}</strong>
+                            <small class="text-muted d-block">{{ txn.currency.code }}</small>
+                        </td>
+                        <td>
+                            {% if txn.payment_status == 'SUCCESS' %}
+                            <span class="badge badge-success-custom">
+                                <i class="bi bi-check-circle"></i> SUCCESS
+                            </span>
+                            {% elif txn.payment_status == 'FAILED' %}
+                            <span class="badge badge-danger-custom">
+                                <i class="bi bi-x-circle"></i> FAILED
+                            </span>
+                            {% elif txn.payment_status == 'PENDING' %}
+                            <span class="badge badge-warning-custom">
+                                <i class="bi bi-hourglass-split"></i> PENDING
+                            </span>
+                            {% else %}
+                            <span class="badge badge-secondary-custom">{{ txn.payment_status|default:txn.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if txn.payment_method %}
+                            <span class="badge bg-info">{{ txn.payment_method }}</span>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ txn.branch_code|default:'—' }}</td>
+                        <td>
+                            <small>{{ txn.operator_id|default:'—'|truncatechars:15 }}</small>
+                        </td>
+                        <td>
+                            {% if txn.payment_verified %}
+                            <i class="bi bi-shield-fill-check text-success" style="font-size: 18px;" title="Verified"></i>
+                            {% elif txn.payment_status == 'SUCCESS' %}
+                            <button class="btn btn-sm btn-warning verify-btn" data-id="{{ txn.id }}">
+                                <i class="bi bi-shield-exclamation"></i> Verify
+                            </button>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div>{{ txn.created_at|date:"Y-m-d" }}</div>
+                            <small class="text-muted">{{ txn.created_at|date:"H:i" }}</small>
+                        </td>
+                        <td>
+                            <a href="{% url 'bancabc:transaction_detail' txn.id %}" 
+                               class="btn btn-sm btn-outline-primary" title="View Details">
+                                <i class="bi bi-eye"></i>
+                            </a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="10" class="text-center py-5">
+                            <i class="bi bi-search" style="font-size: 48px; color: #ccc;"></i>
+                            <p class="text-muted mt-2">No transactions found matching your filters</p>
+                            <a href="{% url 'bancabc:transactions' %}" class="btn btn-sm btn-primary">Clear Filters</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- Pagination -->
+    {% if page_obj.has_other_pages %}
+    <div class="card-footer">
+        <nav>
+            <ul class="pagination justify-content-center mb-0">
+                {% if page_obj.has_previous %}
+                <li class="page-item">
+                    <a class="page-link" href="?page=1{% for key, value in filters.items %}{% if value %}&{{ key }}={{ value }}{% endif %}{% endfor %}">
+                        <i class="bi bi-chevron-double-left"></i>
+                    </a>
+                </li>
+                <li class="page-item">
+                    <a class="page-link" href="?page={{ page_obj.previous_page_number }}{% for key, value in filters.items %}{% if value %}&{{ key }}={{ value }}{% endif %}{% endfor %}">
+                        <i class="bi bi-chevron-left"></i>
+                    </a>
+                </li>
+                {% endif %}
+                
+                <li class="page-item active">
+                    <span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+                </li>
+                
+                {% if page_obj.has_next %}
+                <li class="page-item">
+                    <a class="page-link" href="?page={{ page_obj.next_page_number }}{% for key, value in filters.items %}{% if value %}&{{ key }}={{ value }}{% endif %}{% endfor %}">
+                        <i class="bi bi-chevron-right"></i>
+                    </a>
+                </li>
+                <li class="page-item">
+                    <a class="page-link" href="?page={{ page_obj.paginator.num_pages }}{% for key, value in filters.items %}{% if value %}&{{ key }}={{ value }}{% endif %}{% endfor %}">
+                        <i class="bi bi-chevron-double-right"></i>
+                    </a>
+                </li>
+                {% endif %}
+            </ul>
+        </nav>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+$(document).ready(function() {
+    $('.verify-btn').click(function() {
+        const btn = $(this);
+        const txnId = btn.data('id');
+        
+        if (confirm('Verify this transaction?')) {
+            $.ajax({
+                url: `/bancabc/api/verify/${txnId}/`,
+                type: 'POST',
+                headers: {
+                    'X-CSRFToken': '{{ csrf_token }}'
+                },
+                success: function(response) {
+                    if (response.status === 'success') {
+                        btn.replaceWith('<i class="bi bi-shield-fill-check text-success" style="font-size: 18px;"></i>');
+                        alert('Transaction verified successfully!');
+                    }
+                },
+                error: function() {
+                    alert('Failed to verify transaction');
+                }
+            });
+        }
+    });
+});
+</script>
+{% endblock %}

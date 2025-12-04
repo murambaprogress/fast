@@ -81,23 +81,75 @@ class ProcessedTransaction(models.Model):
     Model to track processed BANCABC transactions for idempotency.
     Prevents duplicate processing of the same transaction.
     """
+    PAYMENT_STATUS_CHOICES = [
+        ('SUCCESS', 'Success'),
+        ('FAILED', 'Failed'),
+        ('PENDING', 'Pending'),
+        ('CANCELLED', 'Cancelled'),
+    ]
+    
+    PAYMENT_METHOD_CHOICES = [
+        ('branch', 'Branch'),
+        ('digital', 'Digital Banking'),
+        ('kiosk', 'Kiosk'),
+        ('agent', 'Agent'),
+        ('mobile_app', 'Mobile App'),
+        ('internet_banking', 'Internet Banking'),
+    ]
+    
     idempotency_key = models.CharField(max_length=255, unique=True)
     transaction_id = models.CharField(max_length=255, db_index=True)
+    bancabc_reference = models.CharField(max_length=255, db_index=True, blank=True, null=True)
+    bancabc_transaction_id = models.CharField(max_length=255, blank=True, null=True)
+    
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     currency = models.ForeignKey(Currency, on_delete=models.CASCADE)
+    
     status = models.CharField(max_length=20, choices=[
         ('processing', 'Processing'),
         ('completed', 'Completed'),
         ('failed', 'Failed'),
     ], default='processing')
-    bancabc_transaction_id = models.CharField(max_length=255, blank=True, null=True)
+    
+    # Payment details
+    payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, blank=True, null=True)
+    payment_verified = models.BooleanField(default=False)
+    payment_method = models.CharField(max_length=50, choices=PAYMENT_METHOD_CHOICES, blank=True, null=True)
+    payment_channel = models.CharField(max_length=50, blank=True, null=True)
+    
+    # BancABC operator/branch details
+    operator_id = models.CharField(max_length=100, blank=True, null=True)
+    branch_code = models.CharField(max_length=100, blank=True, null=True)
+    customer_account = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Failure information
+    failure_reason = models.TextField(blank=True, null=True)
+    
+    # Additional metadata
+    remarks = models.TextField(blank=True, null=True)
+    payment_details = models.JSONField(blank=True, null=True)
     response_data = models.JSONField(blank=True, null=True)
+    
+    # Timestamps
+    payment_date = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(blank=True, null=True)
+    notified_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         db_table = 'wallets_processedtransaction'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['bancabc_reference']),
+            models.Index(fields=['payment_status']),
+            models.Index(fields=['payment_verified']),
+            models.Index(fields=['created_at']),
+            models.Index(fields=['branch_code']),
+        ]
+        
+    def __str__(self):
+        return f"BANCABC: {self.bancabc_reference or self.transaction_id} - {self.payment_status or self.status}"
 
 
 class EcoCashTransaction(models.Model):

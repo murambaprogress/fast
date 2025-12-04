@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}BancABC Dashboard{% endblock %} - Fastjet Loyalty</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <style>
+        :root {
+            --primary-color: #0056b3;
+            --success-color: #28a745;
+            --danger-color: #dc3545;
+            --warning-color: #ffc107;
+            --info-color: #17a2b8;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+        }
+        
+        .sidebar {
+            min-height: 100vh;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+        }
+        
+        .sidebar .nav-link {
+            color: rgba(255,255,255,0.8);
+            padding: 12px 20px;
+            margin: 5px 10px;
+            border-radius: 8px;
+            transition: all 0.3s;
+        }
+        
+        .sidebar .nav-link:hover {
+            background-color: rgba(255,255,255,0.1);
+            color: white;
+            transform: translateX(5px);
+        }
+        
+        .sidebar .nav-link.active {
+            background-color: rgba(255,255,255,0.2);
+            color: white;
+            font-weight: 600;
+        }
+        
+        .sidebar .nav-link i {
+            margin-right: 10px;
+            width: 20px;
+        }
+        
+        .navbar {
+            background: white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+        
+        .stat-card {
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            border: none;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.12);
+        }
+        
+        .stat-card .icon {
+            width: 56px;
+            height: 56px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            margin-bottom: 16px;
+        }
+        
+        .stat-card.primary { border-left: 4px solid var(--primary-color); }
+        .stat-card.success { border-left: 4px solid var(--success-color); }
+        .stat-card.danger { border-left: 4px solid var(--danger-color); }
+        .stat-card.warning { border-left: 4px solid var(--warning-color); }
+        .stat-card.info { border-left: 4px solid var(--info-color); }
+        
+        .stat-value {
+            font-size: 32px;
+            font-weight: 700;
+            margin: 8px 0;
+        }
+        
+        .stat-label {
+            font-size: 14px;
+            color: #6c757d;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .badge-status {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .badge-success-custom { background: #d4edda; color: #155724; }
+        .badge-danger-custom { background: #f8d7da; color: #721c24; }
+        .badge-warning-custom { background: #fff3cd; color: #856404; }
+        .badge-secondary-custom { background: #e2e3e5; color: #383d41; }
+        
+        .table-custom {
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+        
+        .table-custom thead {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .table-custom tbody tr:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .btn-custom {
+            border-radius: 8px;
+            padding: 10px 20px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+        
+        .btn-custom:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        
+        .filter-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+        
+        .page-header {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+        
+        .progress-custom {
+            height: 8px;
+            border-radius: 10px;
+            background-color: #e9ecef;
+        }
+        
+        .progress-bar-custom {
+            border-radius: 10px;
+        }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <!-- Top Navbar -->
+    <nav class="navbar navbar-expand-lg navbar-light sticky-top">
+        <div class="container-fluid">
+            <a class="navbar-brand d-flex align-items-center" href="{% url 'bancabc:dashboard' %}">
+                <i class="bi bi-bank2 me-2" style="font-size: 24px; color: var(--primary-color);"></i>
+                <strong>BancABC Dashboard</strong>
+            </a>
+            <div class="d-flex align-items-center">
+                <span class="me-3 text-muted">
+                    <i class="bi bi-person-circle me-1"></i>
+                    {{ request.user.get_full_name|default:request.user.username }}
+                </span>
+                <a href="/admin/" class="btn btn-sm btn-outline-primary me-2">
+                    <i class="bi bi-gear"></i> Admin
+                </a>
+                <a href="/admin/logout/" class="btn btn-sm btn-outline-danger">
+                    <i class="bi bi-box-arrow-right"></i> Logout
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar -->
+            <div class="col-md-3 col-lg-2 px-0 sidebar">
+                <div class="py-4">
+                    <div class="text-center mb-4">
+                        <div class="bg-white rounded-circle d-inline-flex p-3">
+                            <i class="bi bi-bank" style="font-size: 32px; color: var(--primary-color);"></i>
+                        </div>
+                        <h6 class="text-white mt-3 mb-0">BancABC Integration</h6>
+                        <small class="text-white-50">Transaction Management</small>
+                    </div>
+                    
+                    <nav class="nav flex-column">
+                        <a class="nav-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}" 
+                           href="{% url 'bancabc:dashboard' %}">
+                            <i class="bi bi-speedometer2"></i> Dashboard
+                        </a>
+                        <a class="nav-link {% if request.resolver_match.url_name == 'transactions' %}active{% endif %}" 
+                           href="{% url 'bancabc:transactions' %}">
+                            <i class="bi bi-list-ul"></i> Transactions
+                        </a>
+                        <a class="nav-link {% if request.resolver_match.url_name == 'reports' %}active{% endif %}" 
+                           href="{% url 'bancabc:reports' %}">
+                            <i class="bi bi-graph-up"></i> Reports
+                        </a>
+                        <a class="nav-link" href="/admin/wallets/processedtransaction/">
+                            <i class="bi bi-gear-fill"></i> Admin Panel
+                        </a>
+                        <hr class="bg-white-50 mx-3">
+                        <a class="nav-link" href="/admin/wallets/wallettransaction/">
+                            <i class="bi bi-wallet2"></i> Wallet Transactions
+                        </a>
+                        <a class="nav-link" href="/admin/users/user/">
+                            <i class="bi bi-people"></i> Customers
+                        </a>
+                    </nav>
+                </div>
+            </div>
+
+            <!-- Main Content -->
+            <div class="col-md-9 col-lg-10 px-4 py-4">
+                {% block content %}{% endblock %}
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

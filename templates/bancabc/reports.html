@@ -1,0 +1,257 @@
+{% extends 'bancabc/base.html' %}
+
+{% block title %}Reports & Analytics{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h2 class="mb-1"><i class="bi bi-graph-up text-primary"></i> Reports & Analytics</h2>
+            <p class="text-muted mb-0">Comprehensive transaction analysis and insights</p>
+        </div>
+        <div>
+            <button class="btn btn-primary btn-custom" onclick="window.print()">
+                <i class="bi bi-printer"></i> Print Report
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Date Range Filter -->
+<div class="filter-card">
+    <form method="GET" class="row g-3 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label"><i class="bi bi-calendar3"></i> From Date</label>
+            <input type="date" name="date_from" class="form-control" value="{{ date_from }}">
+        </div>
+        <div class="col-md-4">
+            <label class="form-label"><i class="bi bi-calendar3"></i> To Date</label>
+            <input type="date" name="date_to" class="form-control" value="{{ date_to }}">
+        </div>
+        <div class="col-md-4">
+            <button type="submit" class="btn btn-primary btn-custom w-100">
+                <i class="bi bi-arrow-repeat"></i> Generate Report
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- Branch Performance Report -->
+<div class="card table-custom mb-4">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-building"></i> Branch Performance Report</h5>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Branch Code</th>
+                        <th>Total Transactions</th>
+                        <th>Successful</th>
+                        <th>Failed</th>
+                        <th>Total Amount (USD)</th>
+                        <th>Avg Amount</th>
+                        <th>Success Rate</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for branch in branch_report %}
+                    <tr>
+                        <td><strong>{{ branch.branch_code|default:'Unknown' }}</strong></td>
+                        <td>{{ branch.total_transactions }}</td>
+                        <td><span class="badge bg-success">{{ branch.successful }}</span></td>
+                        <td><span class="badge bg-danger">{{ branch.failed }}</span></td>
+                        <td><strong>${{ branch.total_amount|default:0|floatformat:2 }}</strong></td>
+                        <td>${{ branch.avg_amount|default:0|floatformat:2 }}</td>
+                        <td>
+                            {% widthratio branch.successful branch.total_transactions 100 as rate %}
+                            <div class="progress progress-custom">
+                                <div class="progress-bar {% if rate >= 95 %}bg-success{% elif rate >= 85 %}bg-warning{% else %}bg-danger{% endif %} progress-bar-custom" 
+                                     style="width: {{ rate }}%"></div>
+                            </div>
+                            <small>{{ rate }}%</small>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="7" class="text-center py-4 text-muted">No branch data available</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Payment Method Breakdown -->
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card table-custom">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-credit-card"></i> Payment Method Breakdown</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Method</th>
+                                <th>Transactions</th>
+                                <th>Amount (USD)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for method in method_report %}
+                            <tr>
+                                <td>
+                                    <span class="badge bg-info">{{ method.payment_method|default:'Unknown' }}</span>
+                                </td>
+                                <td>{{ method.count }}</td>
+                                <td><strong>${{ method.amount|default:0|floatformat:2 }}</strong></td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="3" class="text-center py-4 text-muted">No data available</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card table-custom">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-star"></i> Top Customers</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Customer</th>
+                                <th>Transactions</th>
+                                <th>Total Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for customer in top_customers %}
+                            <tr>
+                                <td>
+                                    <div><strong>{{ customer.user__first_name }} {{ customer.user__last_name }}</strong></div>
+                                    <small class="text-muted">{{ customer.user__phone_number }}</small>
+                                </td>
+                                <td>{{ customer.total_transactions }}</td>
+                                <td><strong>${{ customer.total_amount|floatformat:2 }}</strong></td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="3" class="text-center py-4 text-muted">No customer data available</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Daily Trend Chart -->
+{% if daily_trend %}
+<div class="card table-custom">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-graph-up-arrow"></i> Daily Transaction Trend</h5>
+    </div>
+    <div class="card-body">
+        <canvas id="dailyTrendChart" height="80"></canvas>
+    </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+{% if daily_trend %}
+const dailyData = {{ daily_trend|safe }};
+const labels = dailyData.map(d => d.day);
+const counts = dailyData.map(d => d.count);
+const successful = dailyData.map(d => d.successful);
+const amounts = dailyData.map(d => d.amount || 0);
+
+const ctx = document.getElementById('dailyTrendChart').getContext('2d');
+new Chart(ctx, {
+    type: 'line',
+    data: {
+        labels: labels,
+        datasets: [
+            {
+                label: 'Total Transactions',
+                data: counts,
+                borderColor: 'rgb(54, 162, 235)',
+                backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                tension: 0.4,
+                yAxisID: 'y'
+            },
+            {
+                label: 'Successful',
+                data: successful,
+                borderColor: 'rgb(75, 192, 192)',
+                backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                tension: 0.4,
+                yAxisID: 'y'
+            },
+            {
+                label: 'Amount (USD)',
+                data: amounts,
+                borderColor: 'rgb(255, 99, 132)',
+                backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                tension: 0.4,
+                yAxisID: 'y1'
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        interaction: {
+            mode: 'index',
+            intersect: false,
+        },
+        plugins: {
+            legend: {
+                position: 'top',
+            }
+        },
+        scales: {
+            y: {
+                type: 'linear',
+                display: true,
+                position: 'left',
+                title: {
+                    display: true,
+                    text: 'Number of Transactions'
+                }
+            },
+            y1: {
+                type: 'linear',
+                display: true,
+                position: 'right',
+                title: {
+                    display: true,
+                    text: 'Amount (USD)'
+                },
+                grid: {
+                    drawOnChartArea: false,
+                }
+            }
+        }
+    }
+});
+{% endif %}
+</script>
+{% endblock %}

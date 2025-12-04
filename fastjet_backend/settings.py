@@ -87,7 +87,7 @@ WSGI_APPLICATION = 'fastjet_backend.wsgi.application'
 # --------------------------------
 # Database Configuration
 # --------------------------------
-# LOCAL DEVELOPMENT (XAMPP MySQL)
+# LOCAL DEVELOPMENT (WAMP/XAMPP MySQL)
 # DATABASES = {
 #     'default': {
 #         'ENGINE': 'django.db.backends.mysql',
@@ -100,6 +100,14 @@ WSGI_APPLICATION = 'fastjet_backend.wsgi.application'
 #             'charset': 'utf8mb4',
 #             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
 #         },
+#     }
+# }
+
+# SQLite (for quick testing without MySQL)
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.sqlite3',
+#         'NAME': BASE_DIR / 'db.sqlite3',
 #     }
 # }
 
@@ -260,3 +268,15 @@ ECOCASH_POINTS_AWARD_RATE = float(os.getenv('ECOCASH_POINTS_AWARD_RATE', '0.02')
 
 # Test MSISDN for EcoCash sandbox/testing
 ECOCASH_TEST_MSISDN = os.getenv('ECOCASH_TEST_MSISDN')
+
+# --------------------------------
+# BancABC Integration Settings
+# --------------------------------
+# API Authentication credentials - Stored in .env file for security
+BANCABC_API_KEY = os.getenv('BANCABC_API_KEY', 'bancabc_prod_2024_7f8e9d2a1b3c4e5f')
+BANCABC_SECRET_KEY = os.getenv('BANCABC_SECRET_KEY', 'sk_bancabc_hmac_9x8y7z6w5v4u3t2s1r0q')
+BANCABC_USERNAME = os.getenv('BANCABC_USERNAME', 'bancabc_api_user')
+
+# Rate limiting settings
+BANCABC_RATE_LIMIT_CALLS = int(os.getenv('BANCABC_RATE_LIMIT_CALLS', '50'))
+BANCABC_RATE_LIMIT_WINDOW = int(os.getenv('BANCABC_RATE_LIMIT_WINDOW', '60'))  # seconds

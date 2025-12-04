@@ -9,6 +9,10 @@ from .views import (
     bancabc_account_update, 
     bancabc_initiate_payment, 
     bancabc_payment_status,
+    bancabc_wallet_validation,
+    bancabc_credit_push,
+    bancabc_transaction_report,
+    bancabc_payment_notification,
     innbucks_generate_code,
     innbucks_check_payment_status,
     innbucks_simulate_scan
@@ -36,6 +40,12 @@ urlpatterns = [
     path('bancabc/account/update/', bancabc_account_update, name='bancabc_account_update'),
     path('bancabc/initiate-payment/', bancabc_initiate_payment, name='bancabc_initiate_payment'),
     path('bancabc/payment-status/<str:transaction_id>/', bancabc_payment_status, name='bancabc_payment_status'),
+    
+    # BANCABC New Integration APIs (Dec 2025) - For BancABC to push credits to customer wallets
+    path('bancabc/wallet/validate/', bancabc_wallet_validation, name='bancabc_wallet_validation'),
+    path('bancabc/payment/notify/', bancabc_payment_notification, name='bancabc_payment_notification'),
+    path('bancabc/wallet/credit/', bancabc_credit_push, name='bancabc_credit_push'),
+    path('bancabc/transactions/report/', bancabc_transaction_report, name='bancabc_transaction_report'),
     
     # InnBucks Payment Integration Endpoints
     path('innbucks/generate-code/', innbucks_generate_code, name='innbucks_generate_code'),
