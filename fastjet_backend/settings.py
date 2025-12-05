@@ -87,7 +87,7 @@ WSGI_APPLICATION = 'fastjet_backend.wsgi.application'
 # --------------------------------
 # Database Configuration
 # --------------------------------
-# LOCAL DEVELOPMENT (WAMP/XAMPP MySQL)
+# LOCAL DEVELOPMENT (WAMP/XAMPP MySQL) - Uncomment for local testing
 # DATABASES = {
 #     'default': {
 #         'ENGINE': 'django.db.backends.mysql',
@@ -111,7 +111,7 @@ WSGI_APPLICATION = 'fastjet_backend.wsgi.application'
 #     }
 # }
 
-# PRODUCTION (PythonAnywhere Cloud MySQL) - Uncomment for deployment
+# PRODUCTION (PythonAnywhere Cloud MySQL)
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',

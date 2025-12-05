@@ -1626,39 +1626,43 @@ def bancabc_transaction_report(request):
         failed_count = 0
 
         for txn in transactions:
-            # Count status
-            if txn.status == 'completed':
-                successful_count += 1
-            elif txn.status == 'failed':
-                failed_count += 1
+            try:
+                # Count status
+                if txn.status == 'completed':
+                    successful_count += 1
+                elif txn.status == 'failed':
+                    failed_count += 1
 
-            # Aggregate amounts by currency
-            if txn.status == 'completed':
-                currency_code = txn.currency.code
-                if currency_code not in total_amounts:
-                    total_amounts[currency_code] = Decimal('0.00')
-                total_amounts[currency_code] += txn.amount
+                # Aggregate amounts by currency
+                if txn.status == 'completed' and txn.currency:
+                    currency_code = txn.currency.code
+                    if currency_code not in total_amounts:
+                        total_amounts[currency_code] = Decimal('0.00')
+                    total_amounts[currency_code] += txn.amount
 
-            # Get channel from response_data
-            response_data = txn.response_data or {}
-            
-            transaction_list.append({
-                'transaction_id': txn.transaction_id,
-                'bancabc_reference': txn.bancabc_transaction_id,
-                'bancabc_transaction_id': response_data.get('bancabc_transaction_id', ''),
-                'customer_id': txn.user.id,
-                'phone_number': txn.user.phone_number,
-                'email': txn.user.email,
-                'customer_name': txn.user.get_full_name(),
-                'amount': str(txn.amount),
-                'currency': txn.currency.code,
-                'status': txn.status,
-                'channel': response_data.get('channel', 'unknown'),
-                'operator_id': response_data.get('operator_id', ''),
-                'branch_code': response_data.get('branch_code', ''),
-                'created_at': txn.created_at.isoformat(),
-                'processed_at': txn.processed_at.isoformat() if txn.processed_at else None
-            })
+                # Get channel from response_data
+                response_data = txn.response_data or {}
+                
+                transaction_list.append({
+                    'transaction_id': txn.transaction_id,
+                    'bancabc_reference': getattr(txn, 'bancabc_transaction_id', '') or '',
+                    'bancabc_transaction_id': response_data.get('bancabc_transaction_id', ''),
+                    'customer_id': txn.user.id if txn.user else None,
+                    'phone_number': getattr(txn.user, 'phone_number', '') if txn.user else '',
+                    'email': getattr(txn.user, 'email', '') if txn.user else '',
+                    'customer_name': txn.user.get_full_name() if txn.user and hasattr(txn.user, 'get_full_name') else '',
+                    'amount': str(txn.amount) if txn.amount else '0.00',
+                    'currency': txn.currency.code if txn.currency else 'USD',
+                    'status': txn.status or 'unknown',
+                    'channel': response_data.get('channel', 'unknown'),
+                    'operator_id': response_data.get('operator_id', ''),
+                    'branch_code': response_data.get('branch_code', ''),
+                    'created_at': txn.created_at.isoformat() if txn.created_at else None,
+                    'processed_at': txn.processed_at.isoformat() if txn.processed_at else None
+                })
+            except Exception as txn_error:
+                logger.warning(f"Error processing transaction {txn.id}: {str(txn_error)}")
+                continue
 
         # Convert Decimal to string for JSON serialization
         total_amounts_str = {k: str(v) for k, v in total_amounts.items()}
@@ -1946,224 +1950,11 @@ def bancabc_payment_notification(request):
             'status': 'error',
             'message': 'Internal server error processing payment notification'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    """
-    Transaction Report API for BancABC
-    
-    Provides transaction reports for reconciliation purposes.
-    Returns both successful and failed transactions within specified date range.
-    
-    Request Body:
-    {
-        "start_date": "2025-12-01T00:00:00Z",  // Required - ISO 8601 format
-        "end_date": "2025-12-04T23:59:59Z",    // Required - ISO 8601 format
-        "transaction_type": "all",              // Optional - "all", "success", "failed"
-        "channel": "branch",                    // Optional - Filter by channel
-        "currency": "USD",                      // Optional - Filter by currency
-        "page": 1,                              // Optional - Page number (default: 1)
-        "page_size": 50                         // Optional - Records per page (default: 50, max: 1000)
-    }
-    
-    Response:
-    {
-        "status": "success",
-        "report": {
-            "start_date": "2025-12-01T00:00:00Z",
-            "end_date": "2025-12-04T23:59:59Z",
-            "total_transactions": 150,
-            "successful_transactions": 145,
-            "failed_transactions": 5,
-            "total_amount": {
-                "USD": "15000.00",
-                "ZAR": "250000.00"
-            },
-            "transactions": [
-                {
-                    "transaction_id": "FJ-BANCABC-ABC123",
-                    "bancabc_reference": "REF-789012",
-                    "bancabc_transaction_id": "BANCABC-TXN-123456",
-                    "customer_id": 12345,
-                    "phone_number": "263771234567",
-                    "amount": "100.00",
-                    "currency": "USD",
-                    "status": "completed",
-                    "channel": "branch",
-                    "created_at": "2025-12-01T10:30:00Z",
-                    "processed_at": "2025-12-01T10:30:05Z"
-                }
-            ]
-        },
-        "pagination": {
-            "page": 1,
-            "page_size": 50,
-            "total_pages": 3,
-            "total_records": 150
-        },
-        "generated_at": "2025-12-04T10:30:00Z"
-    }
-    """
-    try:
-        # Extract report parameters
-        start_date_str = request.data.get('start_date')
-        end_date_str = request.data.get('end_date')
-        transaction_type = request.data.get('transaction_type', 'all').lower()
-        channel_filter = request.data.get('channel', '').lower()
-        currency_filter = request.data.get('currency', '').upper()
-        page = int(request.data.get('page', 1))
-        page_size = min(int(request.data.get('page_size', 50)), 1000)  # Max 1000 per page
 
-        # Validate required fields
-        if not start_date_str or not end_date_str:
-            return Response({
-                'status': 'error',
-                'message': 'start_date and end_date are required'
-            }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Parse dates
-        try:
-            from dateutil import parser
-            start_date = parser.isoparse(start_date_str)
-            end_date = parser.isoparse(end_date_str)
-        except Exception:
-            return Response({
-                'status': 'error',
-                'message': 'Invalid date format. Use ISO 8601 format (e.g., 2025-12-01T00:00:00Z)'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        # Validate date range
-        if start_date > end_date:
-            return Response({
-                'status': 'error',
-                'message': 'start_date must be before end_date'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        # Limit date range to 90 days for performance
-        date_diff = (end_date - start_date).days
-        if date_diff > 90:
-            return Response({
-                'status': 'error',
-                'message': 'Date range cannot exceed 90 days'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        # Build query filters
-        query_filters = {
-            'created_at__gte': start_date,
-            'created_at__lte': end_date,
-            'bancabc_transaction_id__isnull': False  # Only BancABC transactions
-        }
-
-        # Filter by transaction status
-        if transaction_type == 'success':
-            query_filters['status'] = 'completed'
-        elif transaction_type == 'failed':
-            query_filters['status'] = 'failed'
-
-        # Filter by currency
-        if currency_filter:
-            currency_obj = Currency.objects.filter(code=currency_filter).first()
-            if currency_obj:
-                query_filters['currency'] = currency_obj
-
-        # Get transactions
-        transactions_query = ProcessedTransaction.objects.filter(**query_filters).order_by('-created_at')
-
-        # Filter by channel (stored in response_data JSON)
-        if channel_filter:
-            transactions_query = transactions_query.filter(response_data__channel=channel_filter)
-
-        # Get total count before pagination
-        total_count = transactions_query.count()
-
-        # Calculate pagination
-        total_pages = (total_count + page_size - 1) // page_size
-        offset = (page - 1) * page_size
-        
-        # Get paginated results
-        transactions = transactions_query[offset:offset + page_size]
-
-        # Build transaction list
-        transaction_list = []
-        total_amounts = {}
-        successful_count = 0
-        failed_count = 0
-
-        for txn in transactions:
-            # Count status
-            if txn.status == 'completed':
-                successful_count += 1
-            elif txn.status == 'failed':
-                failed_count += 1
-
-            # Aggregate amounts by currency
-            if txn.status == 'completed':
-                currency_code = txn.currency.code
-                if currency_code not in total_amounts:
-                    total_amounts[currency_code] = Decimal('0.00')
-                total_amounts[currency_code] += txn.amount
-
-            # Get channel from response_data
-            response_data = txn.response_data or {}
-            
-            transaction_list.append({
-                'transaction_id': txn.transaction_id,
-                'bancabc_reference': txn.bancabc_transaction_id,
-                'bancabc_transaction_id': response_data.get('bancabc_transaction_id', ''),
-                'customer_id': txn.user.id,
-                'phone_number': txn.user.phone_number,
-                'email': txn.user.email,
-                'customer_name': txn.user.get_full_name(),
-                'amount': str(txn.amount),
-                'currency': txn.currency.code,
-                'status': txn.status,
-                'channel': response_data.get('channel', 'unknown'),
-                'operator_id': response_data.get('operator_id', ''),
-                'branch_code': response_data.get('branch_code', ''),
-                'created_at': txn.created_at.isoformat(),
-                'processed_at': txn.processed_at.isoformat() if txn.processed_at else None
-            })
-
-        # Convert Decimal to string for JSON serialization
-        total_amounts_str = {k: str(v) for k, v in total_amounts.items()}
-
-        # Build report response
-        report = {
-            'start_date': start_date.isoformat(),
-            'end_date': end_date.isoformat(),
-            'filters': {
-                'transaction_type': transaction_type,
-                'channel': channel_filter if channel_filter else 'all',
-                'currency': currency_filter if currency_filter else 'all'
-            },
-            'summary': {
-                'total_transactions': total_count,
-                'successful_transactions': successful_count,
-                'failed_transactions': failed_count,
-                'total_amount': total_amounts_str
-            },
-            'transactions': transaction_list
-        }
-
-        # Log report generation
-        logger.info(f"BancABC transaction report generated: {start_date} to {end_date}, {total_count} transactions")
-
-        return Response({
-            'status': 'success',
-            'report': report,
-            'pagination': {
-                'page': page,
-                'page_size': page_size,
-                'total_pages': total_pages,
-                'total_records': total_count
-            },
-            'generated_at': timezone.now().isoformat()
-        }, status=status.HTTP_200_OK)
-
-    except Exception as e:
-        logger.error(f"BancABC transaction report error: {str(e)}", exc_info=True)
-        return Response({
-            'status': 'error',
-            'message': 'Internal server error generating report'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+# ================================
+# InnBucks Wallet Integration
+# ================================
 
 # ================================
 # InnBucks Wallet Integration
