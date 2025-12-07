@@ -102,7 +102,7 @@ class ProcessedTransaction(models.Model):
     bancabc_reference = models.CharField(max_length=255, db_index=True, blank=True, null=True)
     bancabc_transaction_id = models.CharField(max_length=255, blank=True, null=True)
     
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, blank=True, null=True)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     currency = models.ForeignKey(Currency, on_delete=models.CASCADE)
     
@@ -150,6 +150,80 @@ class ProcessedTransaction(models.Model):
         
     def __str__(self):
         return f"BANCABC: {self.bancabc_reference or self.transaction_id} - {self.payment_status or self.status}"
+
+
+class BancABCAPILog(models.Model):
+    """
+    Model to track ALL BancABC API hits for monitoring and debugging.
+    Records every incoming request from BancABC with status and response.
+    """
+    API_ENDPOINTS = [
+        ('wallet_validate', 'Wallet Validation'),
+        ('payment_notify', 'Payment Notification'),
+        ('wallet_credit', 'Wallet Credit (Credit Push)'),
+        ('transaction_report', 'Transaction Report'),
+        ('other', 'Other'),
+    ]
+    
+    REQUEST_STATUS = [
+        ('success', 'Success'),
+        ('failed', 'Failed'),
+        ('error', 'Error'),
+        ('validation_error', 'Validation Error'),
+        ('auth_error', 'Authentication Error'),
+    ]
+    
+    # Request tracking
+    endpoint = models.CharField(max_length=50, choices=API_ENDPOINTS)
+    request_method = models.CharField(max_length=10, default='POST')
+    request_url = models.CharField(max_length=500)
+    request_headers = models.JSONField(blank=True, null=True)
+    request_body = models.JSONField(blank=True, null=True)
+    
+    # Response tracking
+    response_status_code = models.IntegerField()
+    response_body = models.JSONField(blank=True, null=True)
+    response_time_ms = models.IntegerField(default=0)  # Response time in milliseconds
+    
+    # Status and processing
+    status = models.CharField(max_length=20, choices=REQUEST_STATUS, default='success')
+    error_message = models.TextField(blank=True, null=True)
+    
+    # Customer/Transaction linking
+    phone_number = models.CharField(max_length=20, blank=True, null=True)
+    customer_id = models.IntegerField(blank=True, null=True)
+    transaction_reference = models.CharField(max_length=255, blank=True, null=True)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
+    currency = models.CharField(max_length=10, blank=True, null=True)
+    
+    # Auto-credit tracking
+    auto_credited = models.BooleanField(default=False)
+    auto_credit_amount = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
+    points_awarded = models.IntegerField(default=0, blank=True, null=True)
+    credit_transaction_id = models.CharField(max_length=255, blank=True, null=True)
+    
+    # Source info
+    ip_address = models.GenericIPAddressField(blank=True, null=True)
+    user_agent = models.CharField(max_length=500, blank=True, null=True)
+    
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'wallets_bancabc_api_log'
+        ordering = ['-created_at']
+        verbose_name = 'BancABC API Log'
+        verbose_name_plural = 'BancABC API Logs'
+        indexes = [
+            models.Index(fields=['endpoint']),
+            models.Index(fields=['status']),
+            models.Index(fields=['created_at']),
+            models.Index(fields=['phone_number']),
+            models.Index(fields=['transaction_reference']),
+        ]
+    
+    def __str__(self):
+        return f"{self.endpoint} - {self.status} - {self.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
 
 
 class EcoCashTransaction(models.Model):

@@ -15,7 +15,10 @@ from .views import (
     bancabc_payment_notification,
     innbucks_generate_code,
     innbucks_check_payment_status,
-    innbucks_simulate_scan
+    innbucks_simulate_scan,
+    bancabc_api_logs,
+    bancabc_api_stats,
+    bancabc_api_log_detail,
 )
 from .views_ecocash import (
     ecocash_initiate_payment,
@@ -46,6 +49,11 @@ urlpatterns = [
     path('bancabc/payment/notify/', bancabc_payment_notification, name='bancabc_payment_notification'),
     path('bancabc/wallet/credit/', bancabc_credit_push, name='bancabc_credit_push'),
     path('bancabc/transactions/report/', bancabc_transaction_report, name='bancabc_transaction_report'),
+    
+    # BANCABC Admin Dashboard API Logs Endpoints
+    path('bancabc/api/logs/', bancabc_api_logs, name='bancabc_api_logs'),
+    path('bancabc/api/stats/', bancabc_api_stats, name='bancabc_api_stats'),
+    path('bancabc/api/logs/<int:log_id>/', bancabc_api_log_detail, name='bancabc_api_log_detail'),
     
     # InnBucks Payment Integration Endpoints
     path('innbucks/generate-code/', innbucks_generate_code, name='innbucks_generate_code'),

@@ -3,7 +3,8 @@ from django.utils.html import format_html
 from django.urls import reverse
 from django.utils.safestring import mark_safe
 from django.conf import settings
-from .models import Wallet, WalletBalance, WalletTransaction, ProcessedTransaction, EcoCashTransaction
+from django.db import models
+from .models import Wallet, WalletBalance, WalletTransaction, ProcessedTransaction, EcoCashTransaction, BancABCAPILog
 import json
 
 # Register your models here.
@@ -604,3 +605,232 @@ class EcoCashTransactionAdmin(admin.ModelAdmin):
             f"Successfully regenerated notify URL for {updated_count} transactions."
         )
     regenerate_notify_url.short_description = "Regenerate notify URL for selected transactions"
+
+
+# =============================================================================
+# BancABC API Log Admin - Track ALL API Hits from BancABC
+# =============================================================================
+@admin.register(BancABCAPILog)
+class BancABCAPILogAdmin(admin.ModelAdmin):
+    """
+    BancABC API Log Admin Dashboard
+    Monitors all incoming API requests from BancABC with real-time status tracking.
+    """
+    list_display = [
+        'get_timestamp', 'get_endpoint_badge', 'get_status_badge', 
+        'phone_number', 'get_amount_display', 'transaction_reference',
+        'get_auto_credit_status', 'response_time_ms', 'get_actions'
+    ]
+    
+    list_filter = [
+        'endpoint', 'status', 'auto_credited', 'created_at',
+        ('created_at', admin.DateFieldListFilter),
+    ]
+    
+    search_fields = [
+        'phone_number', 'transaction_reference', 'ip_address',
+        'error_message', 'credit_transaction_id'
+    ]
+    
+    readonly_fields = [
+        'created_at', 'get_request_details', 'get_response_details',
+        'get_full_timeline'
+    ]
+    
+    date_hierarchy = 'created_at'
+    list_per_page = 50
+    
+    fieldsets = (
+        ('📡 Request Information', {
+            'fields': (
+                'endpoint', 'request_method', 'request_url',
+                'get_request_details'
+            )
+        }),
+        ('📤 Response Information', {
+            'fields': (
+                'response_status_code', 'status', 'response_time_ms',
+                'get_response_details', 'error_message'
+            )
+        }),
+        ('👤 Customer & Transaction', {
+            'fields': (
+                'phone_number', 'customer_id', 'transaction_reference',
+                'amount', 'currency'
+            )
+        }),
+        ('💰 Auto-Credit Status', {
+            'fields': (
+                'auto_credited', 'credit_transaction_id'
+            ),
+            'classes': ('collapse',)
+        }),
+        ('🌐 Source Information', {
+            'fields': (
+                'ip_address', 'user_agent', 'created_at'
+            ),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def get_timestamp(self, obj):
+        return obj.created_at.strftime('%Y-%m-%d %H:%M:%S')
+    get_timestamp.short_description = 'Timestamp'
+    get_timestamp.admin_order_field = 'created_at'
+    
+    def get_endpoint_badge(self, obj):
+        colors = {
+            'wallet_validate': '#3498db',
+            'payment_notify': '#9b59b6',
+            'wallet_credit': '#27ae60',
+            'transaction_report': '#f39c12',
+            'other': '#95a5a6',
+        }
+        labels = {
+            'wallet_validate': '🔍 Validate',
+            'payment_notify': '📩 Notify',
+            'wallet_credit': '💰 Credit',
+            'transaction_report': '📊 Report',
+            'other': '❓ Other',
+        }
+        color = colors.get(obj.endpoint, '#95a5a6')
+        label = labels.get(obj.endpoint, obj.endpoint)
+        return format_html(
+            '<span style="background-color:{}; color:white; padding:3px 8px; '
+            'border-radius:4px; font-size:11px; font-weight:bold;">{}</span>',
+            color, label
+        )
+    get_endpoint_badge.short_description = 'Endpoint'
+    get_endpoint_badge.admin_order_field = 'endpoint'
+    
+    def get_status_badge(self, obj):
+        colors = {
+            'success': '#27ae60',
+            'failed': '#e74c3c',
+            'error': '#c0392b',
+            'validation_error': '#f39c12',
+            'auth_error': '#8e44ad',
+        }
+        icons = {
+            'success': '✅',
+            'failed': '❌',
+            'error': '🔴',
+            'validation_error': '⚠️',
+            'auth_error': '🔒',
+        }
+        color = colors.get(obj.status, '#95a5a6')
+        icon = icons.get(obj.status, '❓')
+        return format_html(
+            '<span style="background-color:{}; color:white; padding:3px 8px; '
+            'border-radius:4px; font-size:11px;">{} {}</span>',
+            color, icon, obj.status.upper()
+        )
+    get_status_badge.short_description = 'Status'
+    get_status_badge.admin_order_field = 'status'
+    
+    def get_amount_display(self, obj):
+        if obj.amount:
+            return format_html(
+                '<span style="font-weight:bold; color:#27ae60;">${:,.2f}</span>',
+                obj.amount
+            )
+        return '-'
+    get_amount_display.short_description = 'Amount'
+    
+    def get_auto_credit_status(self, obj):
+        if obj.auto_credited:
+            return format_html(
+                '<span style="color:#27ae60; font-weight:bold;">✅ Credited</span>'
+                '<br/><small style="color:#666;">{}</small>',
+                obj.credit_transaction_id[:20] + '...' if obj.credit_transaction_id and len(obj.credit_transaction_id) > 20 else obj.credit_transaction_id or ''
+            )
+        elif obj.endpoint == 'payment_notify' and obj.status == 'success':
+            return format_html(
+                '<span style="color:#f39c12;">⏳ Pending Credit</span>'
+            )
+        return format_html('<span style="color:#95a5a6;">-</span>')
+    get_auto_credit_status.short_description = 'Auto Credit'
+    
+    def get_request_details(self, obj):
+        if obj.request_body:
+            try:
+                formatted = json.dumps(obj.request_body, indent=2)
+                return format_html(
+                    '<pre style="background:#f8f9fa; padding:10px; border-radius:4px; '
+                    'max-height:300px; overflow:auto; font-size:12px;">{}</pre>',
+                    formatted
+                )
+            except:
+                return str(obj.request_body)
+        return '-'
+    get_request_details.short_description = 'Request Body'
+    
+    def get_response_details(self, obj):
+        if obj.response_body:
+            try:
+                formatted = json.dumps(obj.response_body, indent=2)
+                return format_html(
+                    '<pre style="background:#f8f9fa; padding:10px; border-radius:4px; '
+                    'max-height:300px; overflow:auto; font-size:12px;">{}</pre>',
+                    formatted
+                )
+            except:
+                return str(obj.response_body)
+        return '-'
+    get_response_details.short_description = 'Response Body'
+    
+    def get_full_timeline(self, obj):
+        return format_html(
+            '<div style="background:#f8f9fa; padding:15px; border-radius:8px;">'
+            '<p><strong>📅 Received:</strong> {}</p>'
+            '<p><strong>⏱️ Response Time:</strong> {}ms</p>'
+            '<p><strong>🌐 IP Address:</strong> {}</p>'
+            '</div>',
+            obj.created_at.strftime('%Y-%m-%d %H:%M:%S.%f'),
+            obj.response_time_ms,
+            obj.ip_address or 'Unknown'
+        )
+    get_full_timeline.short_description = 'Timeline'
+    
+    def get_actions(self, obj):
+        actions = []
+        if obj.phone_number:
+            actions.append(format_html(
+                '<a href="/admin/users/customuser/?q={}" style="color:#3498db;" '
+                'title="View Customer">👤</a>',
+                obj.phone_number
+            ))
+        if obj.endpoint == 'payment_notify' and obj.status == 'success' and not obj.auto_credited:
+            actions.append(format_html(
+                '<a href="#" onclick="alert(\'Manual credit pending\'); return false;" '
+                'style="color:#27ae60;" title="Trigger Manual Credit">💰</a>'
+            ))
+        return format_html(' '.join(actions)) if actions else '-'
+    get_actions.short_description = 'Actions'
+    
+    def changelist_view(self, request, extra_context=None):
+        """Add summary stats to the changelist view"""
+        extra_context = extra_context or {}
+        
+        from django.db.models import Count, Sum, Avg
+        from datetime import timedelta
+        from django.utils import timezone
+        
+        # Get stats for last 24 hours
+        last_24h = timezone.now() - timedelta(hours=24)
+        recent_logs = BancABCAPILog.objects.filter(created_at__gte=last_24h)
+        
+        extra_context['api_stats'] = {
+            'total_requests_24h': recent_logs.count(),
+            'success_count': recent_logs.filter(status='success').count(),
+            'failed_count': recent_logs.filter(status__in=['failed', 'error']).count(),
+            'avg_response_time': recent_logs.aggregate(Avg('response_time_ms'))['response_time_ms__avg'] or 0,
+            'total_credited': recent_logs.filter(auto_credited=True).count(),
+            'pending_credits': recent_logs.filter(
+                endpoint='payment_notify', 
+                status='success', 
+                auto_credited=False
+            ).count(),
+        }
+        
+        return super().changelist_view(request, extra_context=extra_context)

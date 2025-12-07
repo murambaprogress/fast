@@ -16,10 +16,12 @@ import logging
 import hmac
 import hashlib
 import requests
+import time
 from django.db import transaction
 from django.utils import timezone
 from django.conf import settings
 from datetime import timedelta
+from .bancabc_logger import log_bancabc_api_call
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -1078,6 +1080,7 @@ def bancabc_wallet_validation(request):
         "validation_timestamp": "2025-12-04T10:30:00Z"
     }
     """
+    start_time = time.time()
     try:
         # Extract all possible lookup parameters
         phone_number = request.data.get('phone_number', '').strip()
@@ -1088,10 +1091,13 @@ def bancabc_wallet_validation(request):
 
         # Validate input - at least one identifier required
         if not phone_number and not email and not customer_id and not national_id:
-            return Response({
+            response_data = {
                 'status': 'error',
                 'message': 'At least one identifier is required: phone_number, email, customer_id, or national_id'
-            }, status=status.HTTP_400_BAD_REQUEST)
+            }
+            log_bancabc_api_call(request, 'wallet_validate', 400, response_data, 'validation_error', 
+                               'Missing required identifier', start_time=start_time)
+            return Response(response_data, status=status.HTTP_400_BAD_REQUEST)
 
         # Try to find user by various methods (in priority order)
         user = None
@@ -1145,13 +1151,15 @@ def bancabc_wallet_validation(request):
         # If user not found after all attempts
         if not user:
             logger.info(f"BancABC lookup: Customer not found - Phone: {phone_number}, Email: {email}, ID: {customer_id}")
-            return Response({
+            response_data = {
                 'status': 'success',
                 'customer_found': False,
                 'message': 'No Fastjet account found for the provided details',
                 'searched_by': 'phone_number' if phone_number else 'email' if email else 'customer_id',
                 'validation_timestamp': timezone.now().isoformat()
-            }, status=status.HTTP_200_OK)
+            }
+            log_bancabc_api_call(request, 'wallet_validate', 200, response_data, 'success', start_time=start_time)
+            return Response(response_data, status=status.HTTP_200_OK)
 
         # Get wallet information
         wallet = None
@@ -1212,21 +1220,25 @@ def bancabc_wallet_validation(request):
         # Log successful validation
         logger.info(f"BancABC lookup success: User {user.id} ({user.phone_number}) found via {search_method}")
 
-        return Response({
+        response_data = {
             'status': 'success',
             'customer_found': True,
             'search_method': search_method,
             'customer_details': customer_details,
             'validation_timestamp': timezone.now().isoformat(),
             'bancabc_reference': account_number if account_number else None
-        }, status=status.HTTP_200_OK)
+        }
+        log_bancabc_api_call(request, 'wallet_validate', 200, response_data, 'success', start_time=start_time)
+        return Response(response_data, status=status.HTTP_200_OK)
 
     except Exception as e:
         logger.error(f"BancABC wallet validation error: {str(e)}", exc_info=True)
-        return Response({
+        response_data = {
             'status': 'error',
             'message': 'Internal server error during validation'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        }
+        log_bancabc_api_call(request, 'wallet_validate', 500, response_data, 'error', str(e), start_time=start_time)
+        return Response(response_data, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])
@@ -1270,6 +1282,7 @@ def bancabc_credit_push(request):
         "bancabc_reference": "REF-789012"
     }
     """
+    start_time = time.time()
     try:
         # Extract transaction data
         transaction_id = request.data.get('transaction_id', '').strip()
@@ -1323,11 +1336,14 @@ def bancabc_credit_push(request):
 
         if validation_errors:
             logger.warning(f"BancABC credit push validation failed: {', '.join(validation_errors)}")
-            return Response({
+            response_data = {
                 'status': 'error',
                 'message': 'Validation failed',
                 'errors': validation_errors
-            }, status=status.HTTP_400_BAD_REQUEST)
+            }
+            log_bancabc_api_call(request, 'wallet_credit', 400, response_data, 'validation_error',
+                               ', '.join(validation_errors), start_time=start_time)
+            return Response(response_data, status=status.HTTP_400_BAD_REQUEST)
 
         # Find user
         user = None
@@ -1338,17 +1354,23 @@ def bancabc_credit_push(request):
             try:
                 user = User.objects.filter(id=int(customer_id)).first()
             except (ValueError, TypeError):
-                return Response({
+                response_data = {
                     'status': 'error',
                     'message': 'Invalid customer_id format'
-                }, status=status.HTTP_400_BAD_REQUEST)
+                }
+                log_bancabc_api_call(request, 'wallet_credit', 400, response_data, 'validation_error',
+                                   'Invalid customer_id format', start_time=start_time)
+                return Response(response_data, status=status.HTTP_400_BAD_REQUEST)
 
         if not user:
             logger.error(f"BancABC credit push failed: User not found - Phone: {phone_number}, ID: {customer_id}")
-            return Response({
+            response_data = {
                 'status': 'error',
                 'message': 'Customer not found in our system'
-            }, status=status.HTTP_404_NOT_FOUND)
+            }
+            log_bancabc_api_call(request, 'wallet_credit', 404, response_data, 'failed',
+                               'Customer not found', start_time=start_time)
+            return Response(response_data, status=status.HTTP_404_NOT_FOUND)
 
         # Idempotency check
         idempotency_key = request.META.get('HTTP_IDEMPOTENCY_KEY') or f"bancabc-credit-{transaction_id}"
@@ -1361,11 +1383,14 @@ def bancabc_credit_push(request):
         if existing_txn:
             # Return cached response
             logger.info(f"BancABC credit push - duplicate transaction: {transaction_id}")
-            return Response(existing_txn.response_data or {
+            response_data = existing_txn.response_data or {
                 'status': 'success',
                 'message': 'Transaction already processed',
                 'transaction_id': transaction_id
-            }, status=status.HTTP_200_OK)
+            }
+            log_bancabc_api_call(request, 'wallet_credit', 200, response_data, 'duplicate',
+                               'Transaction already processed', start_time=start_time)
+            return Response(response_data, status=status.HTTP_200_OK)
 
         # Get currency object
         currency_obj = get_object_or_404(Currency, code=currency.upper())
@@ -1455,6 +1480,9 @@ def bancabc_credit_push(request):
                 # Log success
                 logger.info(f"BancABC credit push success: User {user.id}, Amount {amount_decimal} {currency}, Channel {channel}, Ref {bancabc_reference}")
 
+                log_bancabc_api_call(request, 'wallet_credit', 200, processed_txn.response_data, 'success',
+                                   f'Wallet credited: {amount_decimal} {currency}', start_time=start_time,
+                                   auto_credited=True, auto_credit_amount=amount_decimal)
                 return Response(processed_txn.response_data, status=status.HTTP_200_OK)
 
         except Exception as e:
@@ -1467,17 +1495,23 @@ def bancabc_credit_push(request):
             processed_txn.save()
 
             logger.error(f"BancABC credit push processing error: {str(e)}", exc_info=True)
-            return Response({
+            response_data = {
                 'status': 'error',
                 'message': 'Internal server error processing credit push'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            }
+            log_bancabc_api_call(request, 'wallet_credit', 500, response_data, 'error',
+                               f'Processing failed: {str(e)}', start_time=start_time)
+            return Response(response_data, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     except Exception as e:
         logger.error(f"BancABC credit push error: {str(e)}", exc_info=True)
-        return Response({
+        response_data = {
             'status': 'error',
             'message': 'Internal server error processing credit push'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        }
+        log_bancabc_api_call(request, 'wallet_credit', 500, response_data, 'error',
+                           f'Error: {str(e)}', start_time=start_time)
+        return Response(response_data, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])
@@ -1540,6 +1574,7 @@ def bancabc_transaction_report(request):
         "generated_at": "2025-12-04T10:30:00Z"
     }
     """
+    start_time = time.time()
     try:
         # Extract report parameters
         start_date_str = request.data.get('start_date')
@@ -1552,10 +1587,13 @@ def bancabc_transaction_report(request):
 
         # Validate required fields
         if not start_date_str or not end_date_str:
-            return Response({
+            response_data = {
                 'status': 'error',
                 'message': 'start_date and end_date are required'
-            }, status=status.HTTP_400_BAD_REQUEST)
+            }
+            log_bancabc_api_call(request, 'transaction_report', 400, response_data, 'validation_error',
+                               'Missing required dates', start_time=start_time)
+            return Response(response_data, status=status.HTTP_400_BAD_REQUEST)
 
         # Parse dates
         try:
@@ -1563,25 +1601,34 @@ def bancabc_transaction_report(request):
             start_date = parser.isoparse(start_date_str)
             end_date = parser.isoparse(end_date_str)
         except Exception:
-            return Response({
+            response_data = {
                 'status': 'error',
                 'message': 'Invalid date format. Use ISO 8601 format (e.g., 2025-12-01T00:00:00Z)'
-            }, status=status.HTTP_400_BAD_REQUEST)
+            }
+            log_bancabc_api_call(request, 'transaction_report', 400, response_data, 'validation_error',
+                               'Invalid date format', start_time=start_time)
+            return Response(response_data, status=status.HTTP_400_BAD_REQUEST)
 
         # Validate date range
         if start_date > end_date:
-            return Response({
+            response_data = {
                 'status': 'error',
                 'message': 'start_date must be before end_date'
-            }, status=status.HTTP_400_BAD_REQUEST)
+            }
+            log_bancabc_api_call(request, 'transaction_report', 400, response_data, 'validation_error',
+                               'Invalid date range', start_time=start_time)
+            return Response(response_data, status=status.HTTP_400_BAD_REQUEST)
 
         # Limit date range to 90 days for performance
         date_diff = (end_date - start_date).days
         if date_diff > 90:
-            return Response({
+            response_data = {
                 'status': 'error',
                 'message': 'Date range cannot exceed 90 days'
-            }, status=status.HTTP_400_BAD_REQUEST)
+            }
+            log_bancabc_api_call(request, 'transaction_report', 400, response_data, 'validation_error',
+                               'Date range exceeds 90 days', start_time=start_time)
+            return Response(response_data, status=status.HTTP_400_BAD_REQUEST)
 
         # Build query filters
         query_filters = {
@@ -1688,7 +1735,7 @@ def bancabc_transaction_report(request):
         # Log report generation
         logger.info(f"BancABC transaction report generated: {start_date} to {end_date}, {total_count} transactions")
 
-        return Response({
+        response_data = {
             'status': 'success',
             'report': report,
             'pagination': {
@@ -1698,14 +1745,20 @@ def bancabc_transaction_report(request):
                 'total_records': total_count
             },
             'generated_at': timezone.now().isoformat()
-        }, status=status.HTTP_200_OK)
+        }
+        log_bancabc_api_call(request, 'transaction_report', 200, response_data, 'success',
+                           f'Report generated: {total_count} transactions', start_time=start_time)
+        return Response(response_data, status=status.HTTP_200_OK)
 
     except Exception as e:
         logger.error(f"BancABC transaction report error: {str(e)}", exc_info=True)
-        return Response({
+        response_data = {
             'status': 'error',
             'message': 'Internal server error generating report'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        }
+        log_bancabc_api_call(request, 'transaction_report', 500, response_data, 'error',
+                           f'Error: {str(e)}', start_time=start_time)
+        return Response(response_data, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])
@@ -1766,6 +1819,7 @@ def bancabc_payment_notification(request):
         "next_step": "Do not proceed with wallet credit"
     }
     """
+    start_time = time.time()
     try:
         # Extract payment notification data
         bancabc_transaction_id = request.data.get('bancabc_transaction_id', '').strip()
@@ -1816,11 +1870,14 @@ def bancabc_payment_notification(request):
 
         if validation_errors:
             logger.warning(f"BancABC payment notification validation failed: {', '.join(validation_errors)}")
-            return Response({
+            response_data = {
                 'status': 'error',
                 'message': 'Validation failed',
                 'errors': validation_errors
-            }, status=status.HTTP_400_BAD_REQUEST)
+            }
+            log_bancabc_api_call(request, 'payment_notify', 400, response_data, 'validation_error',
+                               ', '.join(validation_errors), start_time=start_time)
+            return Response(response_data, status=status.HTTP_400_BAD_REQUEST)
 
         # Check for duplicate notification
         existing_payment = ProcessedTransaction.objects.filter(
@@ -1830,7 +1887,7 @@ def bancabc_payment_notification(request):
         if existing_payment:
             logger.info(f"BancABC payment notification - duplicate: {bancabc_transaction_id}")
             can_proceed = existing_payment.status == 'payment_verified'
-            return Response({
+            response_data = {
                 'status': 'success',
                 'message': 'Payment status already recorded',
                 'bancabc_transaction_id': bancabc_transaction_id,
@@ -1839,7 +1896,9 @@ def bancabc_payment_notification(request):
                 'fastjet_reference': existing_payment.transaction_id,
                 'recorded_at': existing_payment.created_at.isoformat(),
                 'duplicate': True
-            }, status=status.HTTP_200_OK)
+            }
+            log_bancabc_api_call(request, 'payment_notify', 200, response_data, 'success', start_time=start_time)
+            return Response(response_data, status=status.HTTP_200_OK)
 
         # Find customer (optional for payment notification)
         user = None
@@ -1942,14 +2001,61 @@ def bancabc_payment_notification(request):
         if payment_status == 'FAILED':
             response_data['failure_reason'] = failure_reason
 
+        # Log API call and auto-credit if SUCCESS
+        auto_credited = False
+        credit_txn_id = None
+        auto_credit_amount = None
+        points_earned = 0
+        if payment_status == 'SUCCESS' and user:
+            # Auto-credit the wallet
+            try:
+                wallet, _ = Wallet.objects.get_or_create(user=user)
+                wallet_balance, _ = WalletBalance.objects.get_or_create(wallet=wallet, currency=currency_obj)
+                wallet_balance.balance += amount_decimal
+                wallet_balance.save()
+                
+                # Record wallet transaction
+                WalletTransaction.objects.create(
+                    wallet=wallet,
+                    currency=currency_obj,
+                    amount=str(amount_decimal),
+                    transaction_type='deposit',
+                    description=f"Auto-credit from BancABC payment - Ref: {bancabc_reference}",
+                    reference=bancabc_reference
+                )
+                
+                # Award loyalty points
+                from loyalty.models import LoyaltyAccount
+                loyalty_account, _ = LoyaltyAccount.objects.get_or_create(user=user)
+                points_earned = int(amount_decimal / 10)
+                if points_earned > 0:
+                    loyalty_account.add_points(points_earned, f"BancABC Payment Bonus - {amount_decimal} {currency}")
+                
+                auto_credited = True
+                credit_txn_id = fastjet_payment_ref
+                auto_credit_amount = amount_decimal
+                response_data['auto_credited'] = True
+                response_data['new_balance'] = str(wallet_balance.balance)
+                response_data['points_earned'] = points_earned
+                logger.info(f"Auto-credited {amount_decimal} {currency} to user {user.id} from BancABC payment")
+            except Exception as credit_error:
+                logger.error(f"Auto-credit failed: {str(credit_error)}")
+                response_data['auto_credit_failed'] = True
+        
+        log_bancabc_api_call(request, 'payment_notify', 200, response_data, 'success',
+                           auto_credited=auto_credited, auto_credit_amount=auto_credit_amount,
+                           points_awarded=points_earned,
+                           credit_transaction_id=credit_txn_id, start_time=start_time)
         return Response(response_data, status=status.HTTP_200_OK)
 
     except Exception as e:
         logger.error(f"BancABC payment notification error: {str(e)}", exc_info=True)
-        return Response({
+        response_data = {
             'status': 'error',
             'message': 'Internal server error processing payment notification'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        }
+        log_bancabc_api_call(request, 'payment_notify', 500, response_data, 'error', str(e), start_time=start_time)
+        return Response(response_data, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # ================================
@@ -2703,3 +2809,289 @@ def innbucks_simulate_scan(request, innbucks_code, transaction_id):
         </html>
         """
         return HttpResponse(html_content, content_type='text/html')
+
+
+# ============================================================================
+# BANCABC API LOGS DASHBOARD ENDPOINTS
+# ============================================================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def bancabc_api_logs(request):
+    """
+    Get BancABC API logs for admin dashboard.
+    
+    Query Parameters:
+    - date_from: Start date (YYYY-MM-DD)
+    - date_to: End date (YYYY-MM-DD)
+    - endpoint: Filter by endpoint (wallet_validation, payment_notify, wallet_credit, transaction_report)
+    - status: Filter by status (success, failed, validation_error, error, duplicate, pending)
+    - auto_credited: Filter by auto-credit status (true, false)
+    - search: Search by phone number, reference, or error message
+    - page: Page number (default: 1)
+    - page_size: Records per page (default: 50, max: 100)
+    """
+    from .models import BancABCAPILog
+    from django.db.models import Q, Sum, Count
+    from django.core.paginator import Paginator
+    
+    # Check if user is staff
+    if not request.user.is_staff:
+        return Response({
+            'status': 'error',
+            'message': 'Admin access required'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        # Get query parameters
+        date_from = request.query_params.get('date_from')
+        date_to = request.query_params.get('date_to')
+        endpoint_filter = request.query_params.get('endpoint', '')
+        status_filter = request.query_params.get('status', '')
+        auto_credited_filter = request.query_params.get('auto_credited', '')
+        search = request.query_params.get('search', '')
+        page = int(request.query_params.get('page', 1))
+        page_size = min(int(request.query_params.get('page_size', 50)), 100)
+        
+        # Build query
+        queryset = BancABCAPILog.objects.all().order_by('-created_at')
+        
+        # Date filters
+        if date_from:
+            from dateutil import parser
+            queryset = queryset.filter(created_at__gte=parser.isoparse(date_from))
+        if date_to:
+            from dateutil import parser
+            end_date = parser.isoparse(date_to)
+            # Include the entire end day
+            end_date = end_date.replace(hour=23, minute=59, second=59)
+            queryset = queryset.filter(created_at__lte=end_date)
+        
+        # Endpoint filter
+        if endpoint_filter:
+            queryset = queryset.filter(endpoint=endpoint_filter)
+        
+        # Status filter
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        # Auto-credited filter
+        if auto_credited_filter:
+            if auto_credited_filter.lower() == 'true':
+                queryset = queryset.filter(auto_credited=True)
+            elif auto_credited_filter.lower() == 'false':
+                queryset = queryset.filter(auto_credited=False)
+        
+        # Search filter
+        if search:
+            queryset = queryset.filter(
+                Q(phone_number__icontains=search) |
+                Q(transaction_reference__icontains=search) |
+                Q(error_message__icontains=search)
+            )
+        
+        # Get total count before pagination
+        total_count = queryset.count()
+        
+        # Paginate
+        paginator = Paginator(queryset, page_size)
+        page_obj = paginator.get_page(page)
+        
+        # Build response
+        logs = []
+        for log in page_obj:
+            logs.append({
+                'id': log.id,
+                'endpoint': log.endpoint,
+                'request_method': log.request_method,
+                'response_status_code': log.response_status_code,
+                'status': log.status,
+                'error_message': log.error_message,
+                'phone_number': log.phone_number,
+                'amount': str(log.amount) if log.amount else None,
+                'currency': log.currency,
+                'transaction_reference': log.transaction_reference,
+                'ip_address': log.ip_address,
+                'response_time_ms': log.response_time_ms,
+                'auto_credited': log.auto_credited,
+                'auto_credit_amount': str(log.auto_credit_amount) if log.auto_credit_amount else None,
+                'points_awarded': log.points_awarded,
+                'created_at': log.created_at.isoformat() if log.created_at else None,
+            })
+        
+        return Response({
+            'status': 'success',
+            'logs': logs,
+            'pagination': {
+                'page': page,
+                'page_size': page_size,
+                'total_pages': paginator.num_pages,
+                'total_records': total_count,
+                'has_next': page_obj.has_next(),
+                'has_previous': page_obj.has_previous(),
+            }
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Error fetching BancABC API logs: {str(e)}", exc_info=True)
+        return Response({
+            'status': 'error',
+            'message': 'Error fetching API logs'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def bancabc_api_stats(request):
+    """
+    Get BancABC API statistics for admin dashboard.
+    
+    Query Parameters:
+    - date_from: Start date (YYYY-MM-DD)
+    - date_to: End date (YYYY-MM-DD)
+    """
+    from .models import BancABCAPILog
+    from django.db.models import Sum, Count, Avg, Q
+    
+    # Check if user is staff
+    if not request.user.is_staff:
+        return Response({
+            'status': 'error',
+            'message': 'Admin access required'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        # Get query parameters
+        date_from = request.query_params.get('date_from')
+        date_to = request.query_params.get('date_to')
+        
+        # Build query
+        queryset = BancABCAPILog.objects.all()
+        
+        # Date filters
+        if date_from:
+            from dateutil import parser
+            queryset = queryset.filter(created_at__gte=parser.isoparse(date_from))
+        if date_to:
+            from dateutil import parser
+            end_date = parser.isoparse(date_to)
+            end_date = end_date.replace(hour=23, minute=59, second=59)
+            queryset = queryset.filter(created_at__lte=end_date)
+        
+        # Calculate statistics
+        total_calls = queryset.count()
+        successful_calls = queryset.filter(status='success').count()
+        failed_calls = queryset.filter(status__in=['failed', 'error']).count()
+        validation_errors = queryset.filter(status='validation_error').count()
+        
+        # Auto-credit stats
+        auto_credited_count = queryset.filter(auto_credited=True).count()
+        auto_credit_total = queryset.filter(auto_credited=True).aggregate(
+            total=Sum('auto_credit_amount')
+        )['total'] or Decimal('0')
+        total_points_awarded = queryset.aggregate(total=Sum('points_awarded'))['total'] or 0
+        
+        # Response time stats
+        avg_response_time = queryset.aggregate(avg=Avg('response_time_ms'))['avg'] or 0
+        
+        # Endpoint breakdown
+        endpoint_stats = queryset.values('endpoint').annotate(
+            count=Count('id'),
+            successful=Count('id', filter=Q(status='success')),
+            failed=Count('id', filter=Q(status__in=['failed', 'error'])),
+        ).order_by('-count')
+        
+        # Status breakdown
+        status_breakdown = queryset.values('status').annotate(
+            count=Count('id')
+        ).order_by('-count')
+        
+        # Recent activity (last 24 hours)
+        from datetime import datetime, timedelta
+        last_24h = timezone.now() - timedelta(hours=24)
+        recent_calls = queryset.filter(created_at__gte=last_24h).count()
+        recent_auto_credits = queryset.filter(
+            created_at__gte=last_24h, 
+            auto_credited=True
+        ).count()
+        
+        return Response({
+            'status': 'success',
+            'stats': {
+                'total_calls': total_calls,
+                'successful_calls': successful_calls,
+                'failed_calls': failed_calls,
+                'validation_errors': validation_errors,
+                'success_rate': round((successful_calls / total_calls * 100) if total_calls > 0 else 0, 2),
+                'auto_credited_count': auto_credited_count,
+                'auto_credit_total': str(auto_credit_total),
+                'total_points_awarded': total_points_awarded,
+                'avg_response_time_ms': round(avg_response_time, 2),
+                'recent_calls_24h': recent_calls,
+                'recent_auto_credits_24h': recent_auto_credits,
+            },
+            'endpoint_breakdown': list(endpoint_stats),
+            'status_breakdown': list(status_breakdown),
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Error fetching BancABC API stats: {str(e)}", exc_info=True)
+        return Response({
+            'status': 'error',
+            'message': 'Error fetching API statistics'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def bancabc_api_log_detail(request, log_id):
+    """
+    Get detailed information for a specific BancABC API log entry.
+    
+    Parameters:
+    - log_id: The ID of the log entry
+    """
+    from .models import BancABCAPILog
+    
+    # Check if user is staff
+    if not request.user.is_staff:
+        return Response({
+            'status': 'error',
+            'message': 'Admin access required'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        log = get_object_or_404(BancABCAPILog, id=log_id)
+        
+        return Response({
+            'status': 'success',
+            'log': {
+                'id': log.id,
+                'endpoint': log.endpoint,
+                'request_method': log.request_method,
+                'request_headers': log.request_headers,
+                'request_body': log.request_body,
+                'response_status_code': log.response_status_code,
+                'response_body': log.response_body,
+                'status': log.status,
+                'error_message': log.error_message,
+                'phone_number': log.phone_number,
+                'amount': str(log.amount) if log.amount else None,
+                'currency': log.currency,
+                'transaction_reference': log.transaction_reference,
+                'ip_address': log.ip_address,
+                'user_agent': log.user_agent,
+                'response_time_ms': log.response_time_ms,
+                'auto_credited': log.auto_credited,
+                'auto_credit_amount': str(log.auto_credit_amount) if log.auto_credit_amount else None,
+                'points_awarded': log.points_awarded,
+                'created_at': log.created_at.isoformat() if log.created_at else None,
+            }
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Error fetching BancABC API log detail: {str(e)}", exc_info=True)
+        return Response({
+            'status': 'error',
+            'message': 'Error fetching log details'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
