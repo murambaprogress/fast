@@ -14,7 +14,8 @@ db.sqlite3
 db.sqlite3-journal
 /media
 /staticfiles
-/static
+# Note: /static/frontend is tracked for production builds
+!/static/frontend/
 
 # Environment variables
 .env
