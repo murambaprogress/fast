@@ -115,7 +115,7 @@ WSGI_APPLICATION = 'fastjet_backend.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'fastjet$fastdb',
+        'NAME': 'fastjet$jetjet',
         'USER': 'fastjet',
         'PASSWORD': 'jetjetv1',
         'HOST': 'fastjet.mysql.pythonanywhere-services.com',
